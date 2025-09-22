@@ -15,14 +15,16 @@ class RAGClient:
         self.base_url = base_url or config.backend_api_url
         self.client = httpx.AsyncClient(timeout=300.0)
 
-    async def query(self, question: str, top_k: int = None, use_agents: bool = False) -> Dict[str, Any]:
+    async def query(self, question: str, top_k: int = None, use_agents: bool = True) -> Dict[str, Any]:
         """Query the RAG system using OpenWebUI-compatible chat completions endpoint."""
         try:
-            # For evaluation, disable agents by using a special model name or add instruction
+            # For evaluation, use CrewAI agents by default
             model_name = "agentic-rag-ollama"
 
-            # Add instruction to use simple RAG if agents disabled
-            if not use_agents:
+            # Add instruction to use CrewAI agents if enabled
+            if use_agents:
+                question = f"[CREW_AI] {question}"
+            else:
                 question = f"[SIMPLE_RAG] {question}"
 
             # Use OpenWebUI-compatible chat completions format
@@ -52,15 +54,29 @@ class RAGClient:
                 content = chat_response["choices"][0]["message"]["content"]
 
                 # Split content to separate answer from sources
+                # Try multiple source formats
                 parts = content.split("**Sources:**")
+                if len(parts) == 1:
+                    parts = content.split("\n\n Sources")
+                if len(parts) == 1:
+                    parts = content.split("\n\nSources")
+                
                 answer = parts[0].strip()
 
                 # Extract sources if present
                 if len(parts) > 1:
                     source_lines = parts[1].strip().split('\n')
                     for line in source_lines:
-                        if line.strip() and line.strip().startswith(('1.', '2.', '3.')):
-                            sources.append({"content": line.strip()})
+                        line = line.strip()
+                        if line and (line.startswith(('1.', '2.', '3.', '4.', '5.')) or 
+                                   line.startswith(('•', '-', '*')) or
+                                   'relevance:' in line.lower()):
+                            # Clean up the source line
+                            clean_line = line
+                            if line.startswith(('1.', '2.', '3.', '4.', '5.')):
+                                clean_line = line[2:].strip()  # Remove numbering
+                            
+                            sources.append({"content": clean_line})
 
             # Return in expected format for evaluator
             return {

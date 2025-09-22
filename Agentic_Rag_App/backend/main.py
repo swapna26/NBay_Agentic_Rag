@@ -1,4 +1,27 @@
-"""Main FastAPI application for Agentic RAG Backend."""
+"""
+Agentic RAG Backend - FastAPI Application
+
+This is the main FastAPI application that provides the backend API for the
+Agentic RAG system. It integrates CrewAI agents, PostgreSQL vector storage,
+and Phoenix observability to deliver intelligent document retrieval and
+response generation capabilities.
+
+Key Features:
+- CrewAI multi-agent processing (Primary)
+- PostgreSQL vector store integration
+- OpenWebUI compatibility
+- Phoenix observability and tracing
+- Conversation memory management
+- Rate limiting and error handling
+
+API Endpoints:
+- /api/models - Model information for OpenWebUI
+- /api/chat/completions - Chat completions endpoint
+- /health - Health check endpoint
+- /info - System information
+
+Version: 1.0.0
+"""
 
 import ssl
 import urllib3
@@ -8,7 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import structlog
 
-# Disable SSL verification globally
+# Disable SSL verification globally for development
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ssl._create_default_https_context = ssl._create_unverified_context
 
@@ -55,11 +78,22 @@ rag_service = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize and cleanup the application."""
+    """
+    Application lifespan manager for startup and shutdown.
+    
+    This function handles:
+    1. Phoenix service initialization and instrumentation
+    2. RAG service initialization with CrewAI agents
+    3. Database connection setup
+    4. Graceful shutdown and cleanup
+    
+    Args:
+        app: FastAPI application instance
+    """
     global rag_service, phoenix_service
     
-    # Startup
-    logger.info("Starting Agentic RAG Backend with CrewAI agents")
+    # Startup sequence
+    logger.info("Starting Agentic RAG Backend with CrewAI integration")
     try:
         # Initialize Phoenix service first
         phoenix_service = PhoenixService(config)
@@ -113,9 +147,10 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="Agentic RAG API",
-    description="Production-ready Agentic RAG system with OpenWebUI compatibility",
+    description="Intelligent RAG system with CrewAI multi-agent processing and OpenWebUI compatibility",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs"
 )
 
 # Add CORS middleware

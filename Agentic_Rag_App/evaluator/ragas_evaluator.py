@@ -18,8 +18,6 @@ from ragas.metrics import (
     answer_correctness
 )
 from datasets import Dataset
-from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.llms.ollama import Ollama
 
 from config import config
 from utils.database_client import DatabaseClient
@@ -35,17 +33,30 @@ class RAGASEvaluator:
         self.db_client = DatabaseClient()
         self.rag_client = RAGClient()
 
-        # Initialize Ollama models for RAGAs
-        self.embedding_model = OllamaEmbedding(
+        # Initialize models for RAGas 0.3.4 with improved compatibility
+        from llama_index.embeddings.ollama import OllamaEmbedding
+        from llama_index.llms.ollama import Ollama
+        from ragas.llms import LlamaIndexLLMWrapper
+        from ragas.embeddings import LlamaIndexEmbeddingsWrapper
+        
+        # Initialize LlamaIndex Ollama models with optimized settings
+        llama_embedding = OllamaEmbedding(
             model_name=config.embedding_model,
-            base_url=config.ollama_base_url
+            base_url=config.ollama_base_url,
+            request_timeout=60.0
         )
 
-        self.llm = Ollama(
+        llama_llm = Ollama(
             model=config.llm_model,
             base_url=config.ollama_base_url,
-            request_timeout=120.0
+            request_timeout=60.0,
+            temperature=0.0,  # Use 0.0 for more consistent results
+            additional_kwargs={"num_predict": 512}  # Limit response length
         )
+
+        # Wrap with RAGas wrappers
+        self.embedding_model = LlamaIndexEmbeddingsWrapper(llama_embedding)
+        self.llm = LlamaIndexLLMWrapper(llama_llm)
 
         # RAGAs metrics mapping
         self.metrics_map = {
@@ -172,18 +183,24 @@ Generate a clear, specific question that would require understanding this docume
             try:
                 question = q_data["question"]
 
-                # Query the RAG system (use fast mode for evaluation)
-                rag_response = await self.rag_client.query(question, use_agents=False)
+                # Query the RAG system (use CrewAI agents for evaluation)
+                rag_response = await self.rag_client.query(question, use_agents=True)
 
                 if "error" in rag_response:
                     logger.warning(f"RAG query failed for question {i+1}", error=rag_response["error"])
                     continue
 
+                # Debug: Log the full RAG response structure
+                logger.info(f"RAG Response structure for question {i+1}", 
+                           rag_response_keys=list(rag_response.keys()) if isinstance(rag_response, dict) else "Not a dict",
+                           context_key_exists="context" in rag_response if isinstance(rag_response, dict) else False,
+                           context_value=rag_response.get("context", "No context key") if isinstance(rag_response, dict) else "Not a dict")
+
                 response_data = {
                     "question": question,
                     "answer": rag_response.get("answer", ""),
                     "contexts": [ctx.get("content", "") for ctx in rag_response.get("context", [])],
-                    "ground_truth": q_data.get("expected_context", ""),
+                    "ground_truth": q_data.get("ground_truth", q_data.get("expected_context", "")),
                     "source_document": q_data.get("source_document", "")
                 }
 
@@ -192,13 +209,16 @@ Generate a clear, specific question that would require understanding this docume
                 logger.info(f"Collected response {i+1}/{len(questions)}",
                           question=question[:50],
                           answer_length=len(response_data["answer"]),
-                          contexts_count=len(response_data["contexts"]))
+                          contexts_count=len(response_data["contexts"]),
+                          contexts_sample=response_data["contexts"][:2] if response_data["contexts"] else "No contexts",
+                          ground_truth_length=len(response_data["ground_truth"]))
 
             except Exception as e:
                 logger.error(f"Failed to collect response for question {i+1}", error=str(e))
                 continue
 
         return responses
+
 
     async def evaluate_with_ragas(self, responses: List[Dict[str, Any]],
                                 selected_metrics: List[str] = None) -> Dict[str, Any]:
@@ -208,7 +228,7 @@ Generate a clear, specific question that would require understanding this docume
                 logger.error("No responses to evaluate")
                 return {}
 
-            # Prepare data for RAGAs
+            # Prepare data for RAGAs 0.3.4 with proper format
             eval_data = {
                 "question": [r["question"] for r in responses],
                 "answer": [r["answer"] for r in responses],
@@ -216,35 +236,109 @@ Generate a clear, specific question that would require understanding this docume
                 "ground_truth": [r["ground_truth"] for r in responses]
             }
 
+            # Ensure contexts are properly formatted as list of strings
+            for i, contexts in enumerate(eval_data["contexts"]):
+                if contexts and len(contexts) > 0:
+                    # Convert to list of strings if needed
+                    if isinstance(contexts[0], dict):
+                        eval_data["contexts"][i] = [ctx.get("content", str(ctx)) for ctx in contexts]
+                    else:
+                        eval_data["contexts"][i] = [str(ctx) for ctx in contexts]
+                else:
+                    eval_data["contexts"][i] = [""]  # Ensure non-empty contexts
+
             # Create dataset
             dataset = Dataset.from_dict(eval_data)
+            
+            # Log dataset info for debugging
+            logger.info("Dataset created successfully", 
+                       columns=list(dataset.column_names),
+                       num_rows=len(dataset))
 
-            # Select metrics to evaluate
+            # Select metrics to evaluate with Ollama compatibility
             metrics_to_use = selected_metrics or config.metrics
             active_metrics = []
-
+            
+            # Prioritize metrics that work better with Ollama
+            ollama_compatible_metrics = ["answer_similarity", "context_recall", "answer_relevancy"]
+            
             for metric_name in metrics_to_use:
                 if metric_name in self.metrics_map:
-                    active_metrics.append(self.metrics_map[metric_name])
+                    # Prioritize Ollama-compatible metrics
+                    if metric_name in ollama_compatible_metrics:
+                        active_metrics.insert(0, self.metrics_map[metric_name])
+                    else:
+                        active_metrics.append(self.metrics_map[metric_name])
                 else:
                     logger.warning(f"Unknown metric: {metric_name}")
 
             if not active_metrics:
                 logger.error("No valid metrics selected")
                 return {}
+                
+            logger.info("Selected metrics for evaluation", 
+                       metrics=[m.__name__ if hasattr(m, '__name__') else str(m) for m in active_metrics])
 
             logger.info("Starting RAGAs evaluation",
                        responses_count=len(responses),
                        metrics=metrics_to_use)
 
-            # Configure RAGAs with Ollama models
-            # Note: RAGAs might need specific configuration for Ollama
-            result = evaluate(
-                dataset=dataset,
-                metrics=active_metrics,
-                llm=self.llm,
-                embeddings=self.embedding_model
-            )
+            # Debug: Print dataset info
+            logger.info("Dataset info", 
+                       num_rows=len(dataset),
+                       columns=list(dataset.column_names),
+                       sample_question=dataset[0]["question"][:100] if len(dataset) > 0 else "No data")
+            
+            # Debug: Check each row for problematic fields
+            for i, row in enumerate(dataset):
+                logger.info(f"Row {i} debug",
+                           question_length=len(str(row.get('question', ''))),
+                           answer_length=len(str(row.get('answer', ''))),
+                           contexts_count=len(row.get('contexts', [])),
+                           ground_truth_length=len(str(row.get('ground_truth', ''))),
+                           has_contexts=bool(row.get('contexts')),
+                           has_ground_truth=bool(row.get('ground_truth')),
+                           contexts_sample=str(row.get('contexts', []))[:100] if row.get('contexts') else "No contexts",
+                           ground_truth_sample=str(row.get('ground_truth', ''))[:100] if row.get('ground_truth') else "No ground truth")
+
+            # Configure RAGAs with improved error handling and timeout management
+            try:
+                logger.info("Starting RAGas evaluation with optimized settings")
+                
+                # Set up evaluation with timeout and error handling
+                import asyncio
+                import signal
+                
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("RAGas evaluation timed out")
+                
+                # Set timeout for evaluation (5 minutes)
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(300)
+                
+                try:
+                    result = evaluate(
+                        dataset=dataset,
+                        metrics=active_metrics,
+                        llm=self.llm,
+                        embeddings=self.embedding_model
+                    )
+                    signal.alarm(0)  # Cancel timeout
+                    logger.info("RAGAs evaluation completed successfully", result_type=type(result).__name__)
+                except TimeoutError:
+                    signal.alarm(0)
+                    logger.error("RAGas evaluation timed out after 5 minutes")
+                    return {"error": "RAGas evaluation timed out"}
+                except Exception as eval_error:
+                    signal.alarm(0)
+                    logger.error("RAGas evaluation failed", error=str(eval_error))
+                    return {"error": f"RAGAs evaluation failed: {str(eval_error)}"}
+                    
+            except Exception as e:
+                logger.error("RAGAs evaluation setup failed", error=str(e), error_type=type(e).__name__)
+                import traceback
+                logger.error("Full traceback", traceback=traceback.format_exc())
+                return {"error": f"RAGAs evaluation setup failed: {str(e)}"}
 
             # Convert results to dict
             evaluation_results = {
@@ -254,20 +348,159 @@ Generate a clear, specific question that would require understanding this docume
                 "scores": {}
             }
 
-            # Extract metric scores
-            for metric_name in metrics_to_use:
-                if metric_name in result:
-                    score = result[metric_name]
-                    if isinstance(score, (list, tuple)):
-                        evaluation_results["scores"][metric_name] = {
-                            "mean": float(pd.Series(score).mean()),
-                            "std": float(pd.Series(score).std()),
-                            "min": float(pd.Series(score).min()),
-                            "max": float(pd.Series(score).max()),
-                            "individual_scores": [float(s) for s in score]
-                        }
-                    else:
-                        evaluation_results["scores"][metric_name] = float(score)
+            # Debug: Print result info
+            logger.info("RAGAs result info", 
+                       result_type=type(result).__name__,
+                       result_str=str(result)[:200] if result else "None")
+
+            # Extract metric scores from EvaluationResult object (RAGas 0.3.4)
+            try:
+                import numpy as np
+                import pandas as pd
+                
+                # RAGas 0.3.4 returns a DataFrame with results
+                if hasattr(result, 'to_pandas'):
+                    # Convert to pandas DataFrame
+                    df = result.to_pandas()
+                    logger.info("RAGas result DataFrame", shape=df.shape, columns=list(df.columns))
+                    
+                    # Process each metric
+                    for metric_name in metrics_to_use:
+                        try:
+                            if metric_name in df.columns:
+                                # Get the scores for this metric
+                                scores = df[metric_name].values
+                                
+                                # Handle NaN values
+                                valid_scores = scores[~pd.isna(scores)]
+                                
+                                if len(valid_scores) == 0:
+                                    logger.warning(f"Metric {metric_name} returned all NaN values")
+                                    evaluation_results["scores"][metric_name] = {
+                                        "mean": 0.0,
+                                        "std": 0.0,
+                                        "min": 0.0,
+                                        "max": 0.0,
+                                        "individual_scores": [],
+                                        "note": "All values were NaN"
+                                    }
+                                else:
+                                    # Calculate statistics
+                                    evaluation_results["scores"][metric_name] = {
+                                        "mean": float(np.mean(valid_scores)),
+                                        "std": float(np.std(valid_scores)),
+                                        "min": float(np.min(valid_scores)),
+                                        "max": float(np.max(valid_scores)),
+                                        "individual_scores": [float(s) for s in valid_scores]
+                                    }
+                                    logger.info(f"Metric {metric_name} processed successfully", 
+                                              mean=float(np.mean(valid_scores)),
+                                              count=len(valid_scores))
+                            else:
+                                logger.warning(f"Metric {metric_name} not found in results")
+                                evaluation_results["scores"][metric_name] = {
+                                    "mean": 0.0,
+                                    "std": 0.0,
+                                    "min": 0.0,
+                                    "max": 0.0,
+                                    "individual_scores": [],
+                                    "note": "Metric not found in results"
+                                }
+                        except Exception as e:
+                            logger.error(f"Failed to process metric {metric_name}", error=str(e))
+                            evaluation_results["scores"][metric_name] = {
+                                "mean": 0.0,
+                                "std": 0.0,
+                                "min": 0.0,
+                                "max": 0.0,
+                                "individual_scores": [],
+                                "note": f"Error processing metric: {str(e)}"
+                            }
+                else:
+                    # Fallback: try to access scores directly
+                    logger.warning("RAGas result does not have to_pandas method, trying direct access")
+                    
+                    # Try different ways to access the scores
+                    scores_dict = {}
+                    if hasattr(result, 'scores'):
+                        scores_dict = result.scores
+                    elif hasattr(result, '_scores_dict'):
+                        scores_dict = result._scores_dict
+                    elif hasattr(result, '__dict__'):
+                        scores_dict = result.__dict__.get('scores', {})
+                    
+                    logger.info("Scores dict", scores=scores_dict)
+                    
+                    for metric_name in metrics_to_use:
+                        try:
+                            if metric_name in scores_dict:
+                                score = scores_dict[metric_name]
+                                
+                                if isinstance(score, (list, tuple, np.ndarray)):
+                                    # Convert to numpy array
+                                    score_array = np.array(score)
+                                    valid_scores = score_array[~np.isnan(score_array)]
+                                    
+                                    if len(valid_scores) == 0:
+                                        evaluation_results["scores"][metric_name] = {
+                                            "mean": 0.0,
+                                            "std": 0.0,
+                                            "min": 0.0,
+                                            "max": 0.0,
+                                            "individual_scores": [],
+                                            "note": "All values were NaN"
+                                        }
+                                    else:
+                                        evaluation_results["scores"][metric_name] = {
+                                            "mean": float(np.mean(valid_scores)),
+                                            "std": float(np.std(valid_scores)),
+                                            "min": float(np.min(valid_scores)),
+                                            "max": float(np.max(valid_scores)),
+                                            "individual_scores": [float(s) for s in valid_scores]
+                                        }
+                                else:
+                                    # Single value
+                                    if pd.isna(score):
+                                        evaluation_results["scores"][metric_name] = {
+                                            "mean": 0.0,
+                                            "std": 0.0,
+                                            "min": 0.0,
+                                            "max": 0.0,
+                                            "individual_scores": [],
+                                            "note": "Single NaN value"
+                                        }
+                                    else:
+                                        evaluation_results["scores"][metric_name] = {
+                                            "mean": float(score),
+                                            "std": 0.0,
+                                            "min": float(score),
+                                            "max": float(score),
+                                            "individual_scores": [float(score)]
+                                        }
+                            else:
+                                logger.warning(f"Metric {metric_name} not found in scores dict")
+                                evaluation_results["scores"][metric_name] = {
+                                    "mean": 0.0,
+                                    "std": 0.0,
+                                    "min": 0.0,
+                                    "max": 0.0,
+                                    "individual_scores": [],
+                                    "note": "Metric not found in scores"
+                                }
+                        except Exception as e:
+                            logger.error(f"Failed to process metric {metric_name}", error=str(e))
+                            evaluation_results["scores"][metric_name] = {
+                                "mean": 0.0,
+                                "std": 0.0,
+                                "min": 0.0,
+                                "max": 0.0,
+                                "individual_scores": [],
+                                "note": f"Error processing metric: {str(e)}"
+                            }
+                        
+            except Exception as e:
+                logger.error("Failed to process evaluation result", error=str(e))
+                return {"error": f"Failed to process evaluation result: {str(e)}"}
 
             logger.info("RAGAs evaluation completed",
                        metrics_count=len(evaluation_results["scores"]))
@@ -283,7 +516,7 @@ Generate a clear, specific question that would require understanding this docume
         """Generate comprehensive evaluation report."""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            report_filename = f"rag_evaluation_report_{timestamp}.json"
+            report_filename = f"crew_ai_evaluation_report_{timestamp}.json"
             report_path = Path(config.reports_dir) / report_filename
 
             if output_path:
@@ -302,11 +535,14 @@ Generate a clear, specific question that would require understanding this docume
                     "timestamp": results.get("timestamp", datetime.now().isoformat()),
                     "evaluator_version": "1.0.0",
                     "ragas_version": "0.1.0",  # Update with actual version
+                    "processing_mode": "crew_ai_agents",
                     "configuration": {
                         "embedding_model": config.embedding_model,
                         "llm_model": config.llm_model,
                         "top_k": config.top_k,
-                        "chunk_size": config.chunk_size
+                        "chunk_size": config.chunk_size,
+                        "agents_enabled": True,
+                        "agent_processing": "CrewAI Multi-Agent System"
                     }
                 },
                 "system_info": system_info,

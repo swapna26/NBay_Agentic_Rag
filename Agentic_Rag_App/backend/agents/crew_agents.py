@@ -1,13 +1,29 @@
+"""
+CrewAI Agents for Intelligent RAG Processing
+
+This module implements a multi-agent system using CrewAI for intelligent document
+retrieval and response generation. The agents work collaboratively to provide
+comprehensive and accurate answers to user queries.
+
+Agent Architecture:
+1. Document Retrieval Agent - Specialized in finding relevant documents
+2. Analysis Agent - Analyzes and processes retrieved information
+3. Response Generation Agent - Creates comprehensive responses
+
+
+Version: 1.0.0
+"""
+
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 import structlog
 from urllib.parse import urlparse
 from crewai import Agent, Task, Crew, Process, LLM
 from crewai.tools import tool
-# from config import BackendConfig
 from llama_index.vector_stores.postgres import PGVectorStore
 from llama_index.core import VectorStoreIndex
 from llama_index.embeddings.ollama import OllamaEmbedding
+from config import BackendConfig
 
 # Explicitly disable OpenAI for CrewAI to prevent API key errors
 os.environ['OPENAI_API_KEY'] = ''
@@ -15,106 +31,50 @@ os.environ['OPENAI_API_BASE'] = ''
 
 logger = structlog.get_logger()
 
-"""Configuration for the RAG Backend API."""
-
-import os
-from pathlib import Path
-from dotenv import load_dotenv
-
-
-class BackendConfig:
-    """Configuration for the RAG backend."""
-    
-    def __init__(self):
-        # Load environment variables
-        self._load_env()
-        
-        # Database
-        self.database_url = os.getenv(
-            'DATABASE_URL', 
-            'postgresql://raguser:ragpassword@localhost:5432/agentic_rag'
-        )
-        
-        # Ollama API
-        self.ollama_base_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
-        self.ollama_model = os.getenv('OLLAMA_MODEL', 'llama3.2:1b')
-        self.ollama_embedding_model = os.getenv('OLLAMA_EMBEDDING_MODEL', 'nomic-embed-text:v1.5')
-        
-        # Phoenix
-        self.phoenix_base_url = os.getenv('PHOENIX_BASE_URL', 'http://localhost:6006')
-        self.phoenix_project_name = os.getenv('PHOENIX_PROJECT_NAME', 'agentic_rag_backend')
-        
-        # RAG Settings
-
-        self.chunk_size = int(os.getenv('CHUNK_SIZE', '1000'))
-        self.chunk_overlap = int(os.getenv('CHUNK_OVERLAP', '200'))
-        self.similarity_top_k = int(os.getenv('SIMILARITY_TOP_K', '5'))
-        self.max_tokens = int(os.getenv('MAX_TOKENS', '4000'))
-        self.temperature = float(os.getenv('TEMPERATURE', '0.1'))
-    
-        
-        # Server Settings
-        self.api_host = os.getenv('API_HOST', '0.0.0.0')
-        self.api_port = int(os.getenv('API_PORT', '8000'))
-        self.cors_origins = os.getenv('CORS_ORIGINS', '*').split(',')
-        
-        # OpenWebUI Integration
-        self.model_name = os.getenv('MODEL_NAME', 'agentic-rag-ollama')
-        self.model_description = os.getenv('MODEL_DESCRIPTION', 'Agentic RAG System with Ollama')
-        
-        # Crew AI
-        self.crew_verbose = os.getenv('CREW_VERBOSE', 'true').lower() == 'true'
-        self.crew_memory = os.getenv('CREW_MEMORY', 'true').lower() == 'true'
-        
-        # Logging
-        self.log_level = os.getenv('LOG_LEVEL', 'INFO')
-        
-        # Validate required settings
-        self._validate()
-    
-    def _load_env(self):
-        """Load environment variables from .env file."""
-        env_paths = [
-            Path(__file__).parent / ".env",
-            Path(__file__).parent.parent / ".env",
-            Path.cwd() / ".env"
-        ]
-        
-        for env_path in env_paths:
-            if env_path.exists():
-                load_dotenv(env_path)
-                print(f"✅ Loaded environment from: {env_path}")
-                return
-        
-        print("⚠️ No .env file found, using defaults")
-    
-    def _validate(self):
-        """Validate configuration."""
-        if not self.database_url.startswith(('postgresql://', 'postgresql+psycopg2://')):
-            raise ValueError('DATABASE_URL must be a PostgreSQL connection string')
-        
-        if not self.ollama_base_url:
-            print("⚠️ Warning: OLLAMA_BASE_URL not set. Using default: http://localhost:11434")
-
 
 class RAGCrew:
-    """CrewAI orchestration for agentic RAG."""
+    """
+    CrewAI Multi-Agent System for Intelligent RAG Processing
+    
+    This class orchestrates a team of specialized AI agents that work collaboratively
+    to provide comprehensive and accurate responses to user queries. Each agent has
+    a specific role in the document retrieval and response generation process.
+    
+    Agent Team:
+    1. Document Retrieval Agent - Finds relevant documents from vector store
+    2. Analysis Agent - Analyzes and processes retrieved information
+    3. Response Generation Agent - Creates comprehensive, well-structured responses
+    
+    Features:
+    - Multi-agent collaboration with specialized roles
+    - PostgreSQL vector store integration
+    - Ollama LLM integration for local processing
+    - Comprehensive error handling and logging
+    """
 
-    def __init__(self, rag_service, config: BackendConfig):
+    def __init__(self, rag_service, config):
+        """
+        Initialize the RAG Crew with specialized agents.
+        
+        Args:
+            rag_service: Reference to the main RAG service
+            config: Configuration object with database and model settings
+        """
         self.rag_service = rag_service
         self.config = config
         self.crew = None
 
-        # Configure Ollama LLM for CrewAI agents using config
+        # Configure Ollama LLM for CrewAI agents
         self.llm = LLM(
-            model="ollama/llama3.2:1b",
-            api_base=config.ollama_base_url,
+            model=f"ollama/{self.config.ollama_model}",
+            api_base=self.config.ollama_base_url,
             temperature=config.temperature,
-            max_tokens=2048,
-            timeout=300,
-            max_retries=3
+            max_tokens=1500,
+            timeout=120,
+            max_retries=2
         )
 
+        # Initialize the agent team
         self._initialize_agents()
 
     def _create_document_retrieval_tool(self):
@@ -253,41 +213,23 @@ Content: {content}
         # Remove any remaining asterisks used for emphasis
         cleaned = re.sub(r'\*([^*\n]+)\*', r'\1', cleaned)
 
-        # Remove any ## headings and convert to # headings to avoid OpenWebUI bold rendering
-        cleaned = re.sub(r'^##\s+(.+)$', r'# \1', cleaned, flags=re.MULTILINE)
+        # Strip all Markdown headings (avoid bold rendering in OpenWebUI)
+        cleaned = re.sub(r'^#{1,6}\s+', '', cleaned, flags=re.MULTILINE)
 
-        # Remove any remaining heading levels > H1
-        cleaned = re.sub(r'^#{3,}\s+(.+)$', r'# \1', cleaned, flags=re.MULTILINE)
+        # Strip common list markers to keep plain text (no bullets)
+        cleaned = re.sub(r'^\s*[-*]\s+', '', cleaned, flags=re.MULTILINE)
+        cleaned = re.sub(r'^\s*\d+\.\s+', '', cleaned, flags=re.MULTILINE)
 
-        # CRITICAL: OpenWebUI renders multiple # headings as bold text
-        # Solution: Use only ONE # heading and convert others to plain text sections
-        lines = cleaned.split('\n')
-        formatted_lines = []
-        has_main_heading = False
+        # Remove prompt-leak style lines and validator/planner artifacts
+        cleaned = re.sub(r'^\s*Your\s+final\s+answer\s+must.*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned = re.sub(r'^\s*Current\s*Task:.*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned = re.sub(r'^\s*Review\s+the\s+draft\s+response.*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned = re.sub(r'^\s*(Questions|Next\s*steps)\s*:.*$', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned = re.sub(r'^\s*I\s+(now\s+)?can\s+(give|provide).*$','', cleaned, flags=re.IGNORECASE | re.MULTILINE)
+        cleaned = re.sub(r'^\s*(Here\s+is|Let\s+me)\b.*$','', cleaned, flags=re.IGNORECASE | re.MULTILINE)
 
-        for line in lines:
-            line = line.strip()
-            if line:
-                # Check if this line starts with #
-                if line.startswith('#'):
-                    if not has_main_heading:
-                        # Keep the first # heading as main heading
-                        formatted_lines.append(line)
-                        has_main_heading = True
-                    else:
-                        # Convert subsequent # headings to plain text sections
-                        heading_text = line.lstrip('#').strip()
-                        formatted_lines.append(f"\n{heading_text}:")
-                elif (not formatted_lines or formatted_lines[-1] == '') and len(line) < 100 and ':' not in line and not has_main_heading:
-                    # First line that looks like a heading becomes main heading
-                    formatted_lines.append(f"# {line}")
-                    has_main_heading = True
-                else:
-                    formatted_lines.append(line)
-            else:
-                formatted_lines.append('')
-
-        cleaned = '\n'.join(formatted_lines)
+        # Remove embedded "Sources" section from the model output (we return sources separately)
+        cleaned = re.sub(r'^\s*#?\s*Sources:?\s*$[\s\S]*', '', cleaned, flags=re.IGNORECASE | re.MULTILINE)
 
         # Remove multiple newlines and clean up
         cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
@@ -357,12 +299,18 @@ Content: {content}
             - "Give me a 5-line summary" (after procurement question) → "FOLLOW_UP - search for procurement summary, key points"
             - "What are HR policies?" (after procurement question) → "NEW_TOPIC - search for HR policies, human resources"
 
-            Always provide clear, specific search guidance for the Document Retriever.""",
+            Always provide clear, specific search guidance for the Document Retriever.
+
+            STRICT OUTPUT RULES:
+            - Do NOT include suggested questions, next steps, or prompts for the user.
+            - Do NOT include FOLLOW_UP/NEW_TOPIC markers in the final user answer (internal guidance only).
+            - Keep output short and purely as internal guidance for retrieval.
+            """,
             llm=self.llm,
             verbose=self.config.crew_verbose,
             allow_delegation=False,
             max_iter=2,
-            max_execution_time=300
+            max_execution_time=180
         )
         
         # Response Generation Agent
@@ -373,31 +321,43 @@ Content: {content}
             - Read the actual document content provided by the retrieval agent
             - Extract SPECIFIC details, facts, and information from those documents
             - Answer based ONLY on what is actually written in the documents
-            - Use simple formatting: ONE # heading at top, then plain text with - bullet points
             - NEVER write generic answers or make assumptions
             - NEVER include your thought process or reasoning in the final answer
-            - NEVER use ** for bold formatting
-            - NEVER use asterisks (*) for emphasis
-            - NEVER use multiple # headings - only ONE # at the very beginning
-            - Use plain text sections and - bullet points for structure""",
+
+            FORMAT STRICTLY AS PLAIN TEXT ONLY:
+            - Do NOT use Markdown at all (no headings, no bold, no italics)
+            - Do NOT start lines with #, ##, ###, -, *, or numbers to mimic lists
+            - Write in short paragraphs separated by blank lines
+            - If listing items, write them as simple sentences on separate lines without list markers
+
+            IMPORTANT:
+            - Do NOT ask follow-up questions or propose next steps in the answer.
+            - Do NOT include any planner artifacts like FOLLOW_UP or NEW_TOPIC in the answer.
+            - Do NOT start with meta phrases like "I can", "I now can", "Here is", or "Let me".
+            - Only answer the user's question.
+            """,
             llm=self.llm,
             verbose=self.config.crew_verbose,
             allow_delegation=False,
-            max_iter=2,
-            max_execution_time=300
+            max_iter=1,
+            max_execution_time=180
         )
         
         # Quality Validation Agent
         self.validation_agent = Agent(
             role="Response Formatter",
             goal="Format responses properly and ensure they answer the user's question",
-            backstory="""You format responses using clean markdown and ensure they directly address 
-            what users asked. You create well-structured, helpful responses.""",
+            backstory="""Ensure responses:
+            - Answer only what the user asked
+            - Contain NO follow-up questions, NO suggested next steps
+            - Are in plain text (no Markdown, no headings, no bullets)
+            - Are concise and specific
+            """,
             llm=self.llm,
             verbose=self.config.crew_verbose,
             allow_delegation=False,
-            max_iter=2,
-            max_execution_time=300
+            max_iter=1,
+            max_execution_time=180
         )
     
     def create_crew(self, query: str) -> Crew:
@@ -489,21 +449,56 @@ Answer with SPECIFIC details from the actual documents using plain text formatti
             expected_output="Context-aware answer based on actual document content, following conversation guidance",
             context=[query_task, retrieval_task]
         )
-        
+
+        # Task 4: Validation and formatting (ensures no follow-up questions / next steps)
+        validation_task = Task(
+            description="""Review the draft response and ensure it:
+1) Answers only the user's question
+2) Contains NO follow-up questions, NO suggested next steps
+3) Is plain text (no Markdown, no headings, no bullets)
+4) Is concise and specific
+
+Return only the final cleaned answer text.""",
+            agent=self.validation_agent,
+            expected_output="Final cleaned answer without follow-up prompts or extra questions",
+            context=[response_task]
+        )
+
         # Create and return crew with timeout
         crew = Crew(
-            agents=[self.query_agent, self.retrieval_agent, self.response_agent],
-            tasks=[query_task, retrieval_task, response_task],
+            agents=[self.query_agent, self.retrieval_agent, self.response_agent, self.validation_agent],
+            tasks=[query_task, retrieval_task, response_task, validation_task],
             process=Process.sequential,
             verbose=False,
             memory=False,
-            max_execution_time=600
+            max_execution_time=180
         )
         
         return crew
     
     async def process_query(self, query: str) -> Dict[str, Any]:
-        """Process a query using the CrewAI agents."""
+        """
+        Process user query using the multi-agent CrewAI system.
+        
+        This method orchestrates the complete workflow:
+        1. Creates a specialized crew for the query
+        2. Executes the multi-agent workflow
+        3. Extracts and cleans the final response
+        4. Retrieves relevant source documents
+        5. Returns structured response with metadata
+        
+        Args:
+            query (str): User's question or query
+            
+        Returns:
+            Dict[str, Any]: Structured response containing:
+                - response: Generated answer
+                - sources: List of source documents
+                - metadata: Processing information
+                
+        Raises:
+            Exception: If processing fails
+        """
         try:
             logger.info("Starting CrewAI processing", query=query[:100])
             
@@ -611,7 +606,7 @@ def test_retrieval_tool_only(config: BackendConfig, query: str = "data types"):
             embed_dim=768,
         )
         
-        print("✅ Vector store connection successful")
+        print(" Vector store connection successful")
         
         # Initialize embedding model
         embed_model = OllamaEmbedding(
@@ -619,7 +614,7 @@ def test_retrieval_tool_only(config: BackendConfig, query: str = "data types"):
             base_url=config.ollama_base_url,
         )
         
-        print("✅ Embedding model initialized")
+        print(" Embedding model initialized")
         
         # Create index
         index = VectorStoreIndex.from_vector_store(
@@ -627,7 +622,7 @@ def test_retrieval_tool_only(config: BackendConfig, query: str = "data types"):
             embed_model=embed_model
         )
         
-        print("✅ Index created")
+        print(" Index created")
         
         # Test retrieval
         retriever = index.as_retriever(
@@ -635,17 +630,17 @@ def test_retrieval_tool_only(config: BackendConfig, query: str = "data types"):
             verbose=True
         )
         
-        print(f"🔍 Retrieving documents for: '{query}'")
+        print(f" Retrieving documents for: '{query}'")
         start_time = time.time()
         
         nodes = retriever.retrieve(query)
         
         end_time = time.time()
-        print(f"⏱️ Retrieval took: {end_time - start_time:.2f} seconds")
-        print(f"📄 Found {len(nodes)} documents")
+        print(f" Retrieval took: {end_time - start_time:.2f} seconds")
+        print(f" Found {len(nodes)} documents")
         
         if nodes:
-            print("\n📋 RETRIEVED DOCUMENTS:")
+            print("\n RETRIEVED DOCUMENTS:")
             for i, node in enumerate(nodes, 1):
                 print(f"\n--- Document {i} ---")
                 print(f"Score: {getattr(node, 'score', 0.0):.3f}")
@@ -657,12 +652,12 @@ def test_retrieval_tool_only(config: BackendConfig, query: str = "data types"):
                 print(f"Content: {node.text[:300]}...")
                 print("-" * 40)
         else:
-            print("❌ No documents retrieved")
+            print(" No documents retrieved")
             
         return True
         
     except Exception as e:
-        print(f"❌ Error in retrieval test: {str(e)}")
+        print(f" Error in retrieval test: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
@@ -687,7 +682,7 @@ def test_ollama_llm_only(config: BackendConfig):
             max_retries=2
         )
 
-        print(f"🤖 Testing LLM: llama3.2:1b")
+        print(f" Testing LLM: llama3.2:1b")
         print(f"🔗 Ollama URL: {config.ollama_base_url}")
         
         # Test simple completion
@@ -703,13 +698,13 @@ def test_ollama_llm_only(config: BackendConfig):
         
         end_time = time.time()
         
-        print(f"⏱️ LLM call took: {end_time - start_time:.2f} seconds")
-        print(f"✅ LLM Response: {response}")
+        print(f" LLM call took: {end_time - start_time:.2f} seconds")
+        print(f" LLM Response: {response}")
         
         return True
         
     except Exception as e:
-        print(f"❌ Error in LLM test: {str(e)}")
+        print(f" Error in LLM test: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
@@ -761,7 +756,7 @@ async def test_full_rag_crew(config: BackendConfig, query: str = "What data type
         rag_service = MockRAGService(config)
         rag_crew = RAGCrew(rag_service, config)
         
-        print("✅ RAG Crew initialized")
+        print(" RAG Crew initialized")
         
         start_time = time.time()
         
@@ -769,15 +764,15 @@ async def test_full_rag_crew(config: BackendConfig, query: str = "What data type
         
         end_time = time.time()
         
-        print(f"⏱️ Full processing took: {end_time - start_time:.2f} seconds")
+        print(f" Full processing took: {end_time - start_time:.2f} seconds")
         print(f"📝 Response: {result['response']}")
-        print(f"📊 Metadata: {result['metadata']}")
+        print(f" Metadata: {result['metadata']}")
         print(f"🔗 Sources: {len(result['sources'])} found")
         
         return True
         
     except Exception as e:
-        print(f"❌ Error in full RAG test: {str(e)}")
+        print(f" Error in full RAG test: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
@@ -805,22 +800,22 @@ def run_all_tests():
     
     # Test 3: Full RAG Crew (only if previous tests pass)
     if retrieval_success and llm_success:
-        print("\n✅ Basic tests passed, testing full RAG Crew...")
+        print("\n Basic tests passed, testing full RAG Crew...")
         try:
             import asyncio
             asyncio.run(test_full_rag_crew(config, "What is the primary purpose of the “Negotiation Plan” document?"))
         except Exception as e:
-            print(f"❌ Full RAG Crew test failed: {e}")
+            print(f" Full RAG Crew test failed: {e}")
     else:
-        print("\n❌ Skipping full RAG test due to basic test failures")
+        print("\n Skipping full RAG test due to basic test failures")
     
     # Summary
     print(f"\n{'='*60}")
     print("TEST SUMMARY")
     print(f"{'='*60}")
-    print(f"📄 Document Retrieval: {'✅ PASS' if retrieval_success else '❌ FAIL'}")
-    print(f"🤖 LLM Connection: {'✅ PASS' if llm_success else '❌ FAIL'}")
-    print(f"🔄 Integration Ready: {'✅ YES' if retrieval_success and llm_success else '❌ NO'}")
+    print(f" Document Retrieval: {' PASS' if retrieval_success else ' FAIL'}")
+    print(f" LLM Connection: {' PASS' if llm_success else ' FAIL'}")
+    print(f" Integration Ready: {' YES' if retrieval_success and llm_success else ' NO'}")
 
 
 if __name__ == "__main__":

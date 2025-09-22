@@ -29,8 +29,8 @@ from utils.phoenix_client import PhoenixClient
 
 class StandaloneConfig:
     """Standalone configuration for indexer without external dependencies."""
-    chunk_size = 1024
-    chunk_overlap = 128
+    chunk_size = 768
+    chunk_overlap = 150
     documents_path = str(Path(__file__).parent.parent / "documents")
     database_url = "postgresql://raguser:ragpassword@localhost:5432/agentic_rag"
     batch_size = 5
@@ -129,7 +129,7 @@ class StandaloneDocumentIndexer:
                     processed_count += successful
 
                     progress.update(task, advance=len(batch))
-                    console.print(f"📊 Batch {i//self.config.batch_size + 1}: {successful}/{len(batch)} documents processed successfully", style="cyan")
+                    console.print(f"Batch {i//self.config.batch_size + 1}: {successful}/{len(batch)} documents processed successfully", style="cyan")
 
                 except Exception as e:
                     logger.error("Failed to process batch", error=str(e))
@@ -142,7 +142,7 @@ class StandaloneDocumentIndexer:
 
         # Show generated markdown files
         md_files = list(self.markdown_dir.glob("*.md"))
-        console.print(f"📁 Markdown files generated: {len(md_files)}", style="green")
+        console.print(f"Markdown files generated: {len(md_files)}", style="green")
         for md_file in md_files:
             size_kb = md_file.stat().st_size / 1024
             console.print(f"  - {md_file.name} ({size_kb:.1f} KB)", style="dim")
@@ -261,7 +261,7 @@ def index(path: Optional[str], force: bool):
         try:
             # Initialize
             if not await indexer.initialize():
-                console.print("❌ Failed to initialize indexer", style="red")
+                console.print(" Failed to initialize indexer", style="red")
                 sys.exit(1)
             
             # Set force re-indexing if specified
@@ -272,15 +272,15 @@ def index(path: Optional[str], force: bool):
             count = await indexer.index_documents(path)
             
             if count > 0:
-                console.print(f"✅ Successfully indexed {count} documents", style="green")
+                console.print(f"Successfully indexed {count} documents", style="green")
             else:
-                console.print("⚠️ No documents were indexed", style="yellow")
+                console.print("No documents were indexed", style="yellow")
                 
         except KeyboardInterrupt:
-            console.print("❌ Indexing interrupted by user", style="red")
+            console.print(" Indexing interrupted by user", style="red")
         except Exception as e:
             logger.error("Indexing failed", error=str(e))
-            console.print(f"❌ Indexing failed: {e}", style="red")
+            console.print(f" Indexing failed: {e}", style="red")
             sys.exit(1)
         finally:
             await indexer.cleanup()
@@ -297,18 +297,18 @@ def status():
         try:
             success = await indexer.initialize()
             if success:
-                console.print("✅ Indexer system is healthy", style="green")
+                console.print(" Indexer system is healthy", style="green")
                 
                 # Get document count from database
                 count = await indexer.db_manager.get_document_count()
-                console.print(f"📄 Documents in index: {count}")
+                console.print(f" Documents in index: {count}")
                 
             else:
-                console.print("❌ Indexer system is not healthy", style="red")
+                console.print(" Indexer system is not healthy", style="red")
                 sys.exit(1)
                 
         except Exception as e:
-            console.print(f"❌ Status check failed: {e}", style="red")
+            console.print(f" Status check failed: {e}", style="red")
             sys.exit(1)
         finally:
             await indexer.cleanup()
@@ -325,14 +325,14 @@ def standalone(path: Optional[str], force: bool):
         indexer = StandaloneDocumentIndexer()
 
         try:
-            console.print("🚀 Starting document indexer with Contextual RAG...", style="bold blue")
+            console.print(" Starting document indexer with Contextual RAG...", style="bold blue")
 
             # Initialize
             if not await indexer.initialize():
-                console.print("❌ Failed to initialize indexer", style="red")
+                console.print(" Failed to initialize indexer", style="red")
                 sys.exit(1)
 
-            console.print("✅ DoclingProcessor initialized with Ollama and vector store", style="green")
+            console.print(" DoclingProcessor initialized with Ollama and vector store", style="green")
 
             # Set force re-indexing if specified
             if force:
@@ -342,15 +342,15 @@ def standalone(path: Optional[str], force: bool):
             count = await indexer.index_documents(path)
 
             if count > 0:
-                console.print(f"🎉 Successfully indexed {count} documents with Contextual RAG!", style="bold green")
+                console.print(f" Successfully indexed {count} documents with Contextual RAG!", style="bold green")
             else:
-                console.print("⚠️ No documents were indexed", style="yellow")
+                console.print(" No documents were indexed", style="yellow")
 
         except KeyboardInterrupt:
-            console.print("❌ Indexing interrupted by user", style="red")
+            console.print(" Indexing interrupted by user", style="red")
         except Exception as e:
             logger.error("Indexing failed", error=str(e))
-            console.print(f"❌ Indexing failed: {e}", style="red")
+            console.print(f" Indexing failed: {e}", style="red")
             sys.exit(1)
         finally:
             await indexer.cleanup()

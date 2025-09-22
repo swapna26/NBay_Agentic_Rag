@@ -28,8 +28,8 @@ class BackendConfig:
         self.phoenix_project_name = os.getenv('PHOENIX_PROJECT_NAME', 'agentic_rag_backend')
         
         # RAG Settings
-        self.chunk_size = int(os.getenv('CHUNK_SIZE', '700'))
-        self.chunk_overlap = int(os.getenv('CHUNK_OVERLAP', '200'))
+        #self.chunk_size = int(os.getenv('CHUNK_SIZE', '700'))
+        #self.chunk_overlap = int(os.getenv('CHUNK_OVERLAP', '200'))
         self.similarity_top_k = int(os.getenv('SIMILARITY_TOP_K', '5'))
         self.max_tokens = int(os.getenv('MAX_TOKENS', '4000'))
         self.temperature = float(os.getenv('TEMPERATURE', '0.1'))
@@ -64,10 +64,10 @@ class BackendConfig:
         for env_path in env_paths:
             if env_path.exists():
                 load_dotenv(env_path)
-                print(f"✅ Loaded environment from: {env_path}")
+                print(f"Loaded environment from: {env_path}")
                 return
         
-        print("⚠️ No .env file found, using defaults")
+        print("No .env file found, using defaults")
     
     def _validate(self):
         """Validate configuration."""
@@ -75,7 +75,7 @@ class BackendConfig:
             raise ValueError('DATABASE_URL must be a PostgreSQL connection string')
         
         if not self.ollama_base_url:
-            print("⚠️ Warning: OLLAMA_BASE_URL not set. Using default: http://localhost:11434")
+            print("Warning: OLLAMA_BASE_URL not set. Using default: http://localhost:11434")
 
 
 # Global config instance

@@ -29,8 +29,8 @@ class IndexerConfig:
         
         # Document processing
         self.documents_path = os.getenv('DOCUMENTS_PATH', './documents')
-        self.chunk_size = int(os.getenv('CHUNK_SIZE', '3000'))
-        self.chunk_overlap = int(os.getenv('CHUNK_OVERLAP', '300'))
+        self.chunk_size = int(os.getenv('CHUNK_SIZE', '768'))
+        self.chunk_overlap = int(os.getenv('CHUNK_OVERLAP', '150'))
         
         # Processing
         self.batch_size = int(os.getenv('BATCH_SIZE', '10'))
@@ -52,10 +52,10 @@ class IndexerConfig:
         for env_path in env_paths:
             if env_path.exists():
                 load_dotenv(env_path)
-                print(f"✅ Loaded environment from: {env_path}")
+                print(f"Loaded environment from: {env_path}")
                 return
         
-        print("⚠️ No .env file found, using defaults")
+        print("No .env file found, using defaults")
     
     def _validate(self):
         """Validate configuration."""
@@ -63,7 +63,7 @@ class IndexerConfig:
             raise ValueError('DATABASE_URL must be a PostgreSQL connection string')
         
         # if self.gemini_api_key == 'your_actual_gemini_api_key_here':
-        #     print("⚠️ Warning: GEMINI_API_KEY not set. Please set it in your .env file")
+        #     print("Warning: GEMINI_API_KEY not set. Please set it in your .env file")
 
 
 # Global config instance

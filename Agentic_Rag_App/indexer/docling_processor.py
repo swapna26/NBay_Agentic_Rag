@@ -195,7 +195,7 @@ class DoclingDocumentProcessor:
                 fallback_node.metadata["has_context"] = False
                 enhanced_nodes.append(fallback_node)
 
-        logger.info(f"✅ Created {len(enhanced_nodes)} contextual nodes")
+        logger.info(f" Created {len(enhanced_nodes)} contextual nodes")
         return enhanced_nodes
 
     async def process_batch(self, file_paths: List[Path]) -> List[bool]:

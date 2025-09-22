@@ -45,13 +45,13 @@ def generate_dataset(num_questions: int, output: Optional[str]):
         generator = TestDatasetGenerator()
 
         try:
-            console.print("🔧 Initializing test dataset generator...", style="bold blue")
+            console.print(" Initializing test dataset generator...", style="bold blue")
 
             if not await generator.initialize():
-                console.print("❌ Failed to initialize dataset generator", style="red")
+                console.print(" Failed to initialize dataset generator", style="red")
                 sys.exit(1)
 
-            console.print("✅ Dataset generator initialized", style="green")
+            console.print(" Dataset generator initialized", style="green")
 
             with Progress(
                 SpinnerColumn(),
@@ -68,14 +68,14 @@ def generate_dataset(num_questions: int, output: Optional[str]):
                 progress.update(task, completed=1)
 
             if not questions:
-                console.print("⚠️ No questions generated", style="yellow")
+                console.print(" No questions generated", style="yellow")
                 return
 
             # Save dataset
             await generator.save_dataset(questions, output)
 
             # Show summary
-            console.print(f"✅ Generated {len(questions)} test questions", style="bold green")
+            console.print(f" Generated {len(questions)} test questions", style="bold green")
 
             # Display sample questions
             if questions:
@@ -94,10 +94,10 @@ def generate_dataset(num_questions: int, output: Optional[str]):
                 console.print(table)
 
         except KeyboardInterrupt:
-            console.print("❌ Dataset generation interrupted", style="red")
+            console.print(" Dataset generation interrupted", style="red")
         except Exception as e:
             logger.error("Dataset generation failed", error=str(e))
-            console.print(f"❌ Dataset generation failed: {e}", style="red")
+            console.print(f" Dataset generation failed: {e}", style="red")
             sys.exit(1)
         finally:
             await generator.cleanup()
@@ -118,13 +118,13 @@ def evaluate(dataset: Optional[str], metrics: tuple, output: Optional[str], ques
         evaluator = RAGASEvaluator()
 
         try:
-            console.print("🚀 Starting RAGAs evaluation...", style="bold blue")
+            console.print(" Starting RAGAs evaluation...", style="bold blue")
 
             if not await evaluator.initialize():
-                console.print("❌ Failed to initialize evaluator", style="red")
+                console.print(" Failed to initialize evaluator", style="red")
                 sys.exit(1)
 
-            console.print("✅ RAGAs evaluator initialized", style="green")
+            console.print(" RAGAs evaluator initialized", style="green")
 
             # Convert metrics tuple to list if provided
             selected_metrics = list(metrics) if metrics else None
@@ -147,20 +147,20 @@ def evaluate(dataset: Optional[str], metrics: tuple, output: Optional[str], ques
                 progress.update(task, completed=1)
 
             if report_path:
-                console.print(f"✅ Evaluation completed successfully!", style="bold green")
-                console.print(f"📊 Report saved to: {report_path}", style="cyan")
+                console.print(f" Evaluation completed successfully!", style="bold green")
+                console.print(f" Report saved to: {report_path}", style="cyan")
 
                 # Try to display summary
                 await display_evaluation_summary(report_path)
             else:
-                console.print("❌ Evaluation failed", style="red")
+                console.print(" Evaluation failed", style="red")
                 sys.exit(1)
 
         except KeyboardInterrupt:
-            console.print("❌ Evaluation interrupted", style="red")
+            console.print(" Evaluation interrupted", style="red")
         except Exception as e:
             logger.error("Evaluation failed", error=str(e))
-            console.print(f"❌ Evaluation failed: {e}", style="red")
+            console.print(f" Evaluation failed: {e}", style="red")
             sys.exit(1)
         finally:
             await evaluator.cleanup()
@@ -175,10 +175,10 @@ def status():
         evaluator = RAGASEvaluator()
 
         try:
-            console.print("🔍 Checking system status...", style="bold blue")
+            console.print(" Checking system status...", style="bold blue")
 
             if not await evaluator.initialize():
-                console.print("❌ System initialization failed", style="red")
+                console.print(" System initialization failed", style="red")
                 sys.exit(1)
 
             # Check database connection and stats
@@ -192,11 +192,11 @@ def status():
             # Display status
             status_panel = Panel.fit(
                 f"""
-Database Status: ✅ Connected
+Database Status:  Connected
 Documents Indexed: {doc_count}
 Total Chunks: {chunk_count}
 Source Files: {len(source_files)}
-Backend API: {'✅ Healthy' if backend_healthy else '❌ Unavailable'}
+Backend API: {' Healthy' if backend_healthy else ' Unavailable'}
                 """.strip(),
                 title="System Status",
                 border_style="green" if backend_healthy else "yellow"
@@ -217,13 +217,13 @@ Backend API: {'✅ Healthy' if backend_healthy else '❌ Unavailable'}
             # Check if test dataset exists
             dataset_path = Path(config.test_dataset_path)
             if dataset_path.exists():
-                console.print(f"✅ Test dataset found: {dataset_path}", style="green")
+                console.print(f" Test dataset found: {dataset_path}", style="green")
             else:
-                console.print(f"⚠️ No test dataset found. Run 'generate-dataset' first.", style="yellow")
+                console.print(f" No test dataset found. Run 'generate-dataset' first.", style="yellow")
 
         except Exception as e:
             logger.error("Status check failed", error=str(e))
-            console.print(f"❌ Status check failed: {e}", style="red")
+            console.print(f" Status check failed: {e}", style="red")
             sys.exit(1)
         finally:
             await evaluator.cleanup()
@@ -248,7 +248,7 @@ async def display_evaluation_summary(report_path: str):
 
         # Display evaluation metadata
         metadata = report.get('evaluation_metadata', {})
-        console.print(f"\n📊 Evaluation Report - {metadata.get('timestamp', 'Unknown')}", style="bold")
+        console.print(f"\n Evaluation Report - {metadata.get('timestamp', 'Unknown')}", style="bold")
 
         # Display scores
         results = report.get('evaluation_results', {})
@@ -294,7 +294,7 @@ Worst Metric: {summary.get('worst_metric', 'N/A')}
             # Display recommendations
             recommendations = summary.get('recommendations', [])
             if recommendations:
-                console.print("\n💡 Recommendations:", style="bold yellow")
+                console.print("\n Recommendations:", style="bold yellow")
                 for i, rec in enumerate(recommendations, 1):
                     console.print(f"  {i}. {rec}")
 
@@ -306,7 +306,7 @@ Worst Metric: {summary.get('worst_metric', 'N/A')}
 
     except Exception as e:
         logger.error("Failed to display report", error=str(e))
-        console.print(f"❌ Failed to display report: {e}", style="red")
+        console.print(f" Failed to display report: {e}", style="red")
 
 
 @cli.command()
@@ -317,13 +317,13 @@ def list_reports(path: Optional[str]):
         reports_dir = Path(path or config.reports_dir)
 
         if not reports_dir.exists():
-            console.print("📁 No reports directory found", style="yellow")
+            console.print(" No reports directory found", style="yellow")
             return
 
         report_files = list(reports_dir.glob("rag_evaluation_report_*.json"))
 
         if not report_files:
-            console.print("📄 No evaluation reports found", style="yellow")
+            console.print(" No evaluation reports found", style="yellow")
             return
 
         table = Table(title="Available Evaluation Reports")
@@ -346,11 +346,11 @@ def list_reports(path: Optional[str]):
             )
 
         console.print(table)
-        console.print(f"\n💡 Use 'show-report -r {reports_dir}/[filename]' to view a specific report")
+        console.print(f"\n Use 'show-report -r {reports_dir}/[filename]' to view a specific report")
 
     except Exception as e:
         logger.error("Failed to list reports", error=str(e))
-        console.print(f"❌ Failed to list reports: {e}", style="red")
+        console.print(f" Failed to list reports: {e}", style="red")
 
 
 if __name__ == '__main__':

@@ -1,12 +1,26 @@
-"""Core RAG service with Ollama and CrewAI integration - Complete Implementation."""
+"""
+Agentic RAG Service with CrewAI Integration
+
+This module provides the core RAG (Retrieval Augmented Generation) service with intelligent
+agentic capabilities using CrewAI. It serves as the primary interface for processing user
+queries with advanced document retrieval and response generation.
+
+Key Features:
+- CrewAI agents as primary processing engine
+- PostgreSQL vector store integration
+- Conversation memory management
+- Rate limiting and error handling
+- Phoenix observability integration
+
+Version: 1.0.0
+"""
 
 import asyncio
 import time
 import re
 from typing import List, Dict, Any, Optional, AsyncGenerator
 import structlog
-from llama_index.core import VectorStoreIndex
-from llama_index.core import StorageContext
+from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.vector_stores.postgres import PGVectorStore
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
@@ -20,25 +34,48 @@ logger = structlog.get_logger()
 
 
 class RAGService:
-    """Core RAG service with agentic capabilities and rate limiting."""
+    """
+    Agentic RAG Service with CrewAI Integration
+    
+    This service provides intelligent document retrieval and response generation using
+    CrewAI agents as the primary processing engine. It integrates with PostgreSQL for
+    vector storage and conversation management.
+    
+    Architecture:
+    1. CrewAI Agents (Primary) - Intelligent query processing
+    2. Chat Engine (Fallback) - LlamaIndex conversation memory
+    3. Query Engine (Final Fallback) - Basic RAG functionality
+    
+    Features:
+    - Multi-agent processing with specialized roles
+    - Conversation memory and context management
+    - Rate limiting and error handling
+    - Phoenix observability integration
+    - PostgreSQL vector store integration
+    """
     
     def __init__(self, config: BackendConfig):
+        """Initialize the RAG service with configuration."""
         self.config = config
+        
+        # Core RAG components
         self.vector_store = None
         self.index = None
         self.query_engine = None
+        self.chat_engine = None
         self.embedding_model = None
         self.llm = None
         self.memory = None
         self.is_initialized = False
         
-        # CrewAI components
+        # CrewAI agents (Primary processing engine)
         self.crew_agents = None
         
-        # Phoenix service (injected from main.py)
-        self.phoenix_service = None
+        # External services
+        self.phoenix_service = None  # Injected from main.py
+        self.conversation_service = None  # PostgreSQL conversation storage
         
-        # Rate limiting (less restrictive for Ollama)
+        # Rate limiting configuration
         self.last_request_time = 0
         self.min_request_interval = getattr(config, 'ollama_min_request_interval', 0.1)
         self.request_count = 0
@@ -46,14 +83,24 @@ class RAGService:
         self.max_requests_per_minute = getattr(config, 'ollama_requests_per_minute', 100)
         self.max_retries = getattr(config, 'ollama_retry_attempts', 3)
         self.retry_delay = getattr(config, 'ollama_retry_delay', 2)
-
-        # Conversation service (PostgreSQL-based)
-        self.conversation_service = None
     
     async def initialize(self):
-        """Initialize the RAG service."""
+        """
+        Initialize the RAG service with all required components.
+        
+        This method sets up:
+        1. PostgreSQL vector store connection
+        2. Ollama embedding and LLM models
+        3. LlamaIndex vector store index
+        4. Chat engine with conversation memory
+        5. CrewAI agents for intelligent processing
+        6. Conversation service for PostgreSQL storage
+        
+        Returns:
+            bool: True if initialization successful, False otherwise
+        """
         try:
-            logger.info("Initializing RAG service with Ollama models and CrewAI agents")
+            logger.info("Initializing Agentic RAG service with CrewAI integration")
 
             # Initialize Ollama embedding model
             self.embedding_model = OllamaEmbedding(
@@ -274,6 +321,41 @@ class RAGService:
             logger.error("Failed to get conversation context", error=str(e))
             return ""
 
+    def _should_include_context(self, question: str, conversation_history: List[Dict]) -> bool:
+        """Heuristically decide whether to include prior context for this question.
+
+        Uses lightweight lexical overlap with the most recent user message to avoid
+        contaminating new-topic queries with old context.
+        """
+        if not conversation_history:
+            return False
+
+        # Look for an explicit reset/new topic signal
+        lower_q = (question or "").lower()
+        explicit_reset_phrases = ["new topic", "start over", "ignore previous", "no relation", "unrelated"]
+        if any(p in lower_q for p in explicit_reset_phrases):
+            return False
+
+        # Find last user message content
+        last_user = next((m for m in reversed(conversation_history) if m.get("role") == "user" and m.get("content")), None)
+        if not last_user:
+            return False
+
+        import re
+        def tokenize(text: str) -> set:
+            tokens = re.findall(r"[a-zA-Z0-9]+", (text or "").lower())
+            # Remove trivial short tokens
+            return {t for t in tokens if len(t) > 2}
+
+        q_tokens = tokenize(question)
+        prev_tokens = tokenize(last_user.get("content", ""))
+        if not q_tokens or not prev_tokens:
+            return False
+
+        overlap = len(q_tokens & prev_tokens) / max(1, len(q_tokens | prev_tokens))
+        # Include context only if sufficient overlap (threshold tuned small)
+        return overlap >= 0.2
+
     def _clean_conversation_context(self, raw_context: str) -> str:
         """Clean conversation context to remove meta-commentary and focus on substance."""
         if not raw_context:
@@ -397,7 +479,25 @@ class RAGService:
             return []
 
     async def chat(self, question: str, conversation_history: List[Dict], conversation_id: Optional[str] = None) -> Dict[str, Any]:
-        """Chat with the RAG system using conversation memory."""
+        """
+        Process user query using intelligent agentic RAG system.
+        
+        This method implements a three-tier processing approach:
+        1. CrewAI Agents (Primary) - Intelligent multi-agent processing
+        2. Chat Engine (Fallback) - LlamaIndex conversation memory
+        3. Query Engine (Final Fallback) - Basic RAG functionality
+        
+        Args:
+            question (str): User's question or query
+            conversation_history (List[Dict]): Previous conversation messages
+            conversation_id (Optional[str]): Unique conversation identifier
+            
+        Returns:
+            Dict[str, Any]: Response containing answer, sources, and metadata
+            
+        Raises:
+            RuntimeError: If service not initialized
+        """
         if not self.is_initialized:
             raise RuntimeError("RAG service not initialized")
 
@@ -460,10 +560,79 @@ class RAGService:
                     }
                 )
 
-            # Use chat engine with conversation memory if available
+            # Use CrewAI agents as primary service
+            if self.crew_agents:
+                try:
+                    logger.info("Using CrewAI agents for intelligent processing")
+
+                    # Build enriched query with recent conversation context (plain text, no markdown)
+                    enriched_query = question
+                    if conversation_history and self._should_include_context(question, conversation_history):
+                        # Take last few turns to provide context
+                        recent = conversation_history[-6:]
+                        ctx_lines = []
+                        for msg in recent:
+                            role = msg.get("role", "user").lower()
+                            content = (msg.get("content", "") or "").strip()
+                            if not content:
+                                continue
+                            if role == "user":
+                                ctx_lines.append(f"User: {content}")
+                            elif role == "assistant":
+                                ctx_lines.append(f"Assistant: {content}")
+                            else:
+                                ctx_lines.append(f"{role.capitalize()}: {content}")
+                        ctx_text = "\n".join(ctx_lines)
+                        enriched_query = (
+                            "Previous conversation context:\n"
+                            f"{ctx_text}\n\n"
+                            "Current question: " + question
+                        )
+
+                    # Process query with CrewAI agents using enriched context
+                    result = await self.crew_agents.process_query(enriched_query)
+
+                    # Add to conversation history if conversation_id provided
+                    if conversation_id:
+                        await self._add_to_conversation(
+                            conversation_id, "user", question, processing_mode="crew_ai_primary"
+                        )
+                        await self._add_to_conversation(
+                            conversation_id, "assistant", result['response'],
+                            sources=result.get('sources', []),
+                            processing_mode="crew_ai_primary_response"
+                        )
+
+                    # Ensure metadata is properly set
+                    if "metadata" not in result:
+                        result["metadata"] = {}
+                    result["metadata"].update({
+                        "model": self.config.ollama_model,
+                        "conversation_id": conversation_id,
+                        "source_count": len(result.get('sources', [])),
+                        "processing_mode": "crew_ai_primary",
+                        "has_conversation_context": len(conversation_history) > 0
+                    })
+
+                    # Log to Phoenix if available
+                    if self.phoenix_service:
+                        await self.phoenix_service.log_chat_interaction(
+                            conversation_id or "unknown",
+                            question,
+                            result["response"],
+                            result.get('sources', []),
+                            result.get("metadata", {})
+                        )
+
+                    return result
+
+                except Exception as e:
+                    logger.warning("CrewAI agents failed, falling back to chat engine", error=str(e))
+
+            # Fallback to chat engine with conversation memory if available
             if self.chat_engine:
                 try:
-                    logger.info("Using chat engine with conversation memory")
+                    logger.info("Using chat engine as fallback with conversation memory")
 
                     # Use the chat engine that maintains conversation context
                     response = await asyncio.to_thread(
@@ -487,12 +656,12 @@ class RAGService:
                     # Add to conversation history if conversation_id provided
                     if conversation_id:
                         await self._add_to_conversation(
-                            conversation_id, "user", question, processing_mode="chat_engine"
+                            conversation_id, "user", question, processing_mode="chat_engine_fallback"
                         )
                         await self._add_to_conversation(
                             conversation_id, "assistant", response_text,
                             sources=sources,
-                            processing_mode="chat_engine_response"
+                            processing_mode="chat_engine_fallback_response"
                         )
 
                     result = {
@@ -502,7 +671,7 @@ class RAGService:
                             "model": self.config.ollama_model,
                             "conversation_id": conversation_id,
                             "source_count": len(sources),
-                            "processing_mode": "chat_engine",
+                            "processing_mode": "chat_engine_fallback",
                             "has_conversation_context": len(conversation_history) > 0
                         }
                     }
@@ -520,24 +689,7 @@ class RAGService:
                     return result
 
                 except Exception as e:
-                    logger.warning("Chat engine failed, falling back to CrewAI agents", error=str(e))
-
-                # Fallback to CrewAI agents if available
-                if self.crew_agents:
-                    result = await self.crew_agents.process_query(question)
-
-                    if conversation_id:
-                        await self._add_to_conversation(
-                            conversation_id, "user", question, processing_mode="crew_ai_fallback"
-                        )
-                        await self._add_to_conversation(
-                            conversation_id, "assistant", result['response'],
-                            sources=result.get('sources', []),
-                            processing_mode="crew_ai_fallback_response"
-                        )
-
-                    result["metadata"]["has_conversation_context"] = len(conversation_history) > 0
-                    return result
+                    logger.warning("Chat engine fallback also failed", error=str(e))
 
             # Final fallback to regular query engine
             logger.info("Using fallback query engine")

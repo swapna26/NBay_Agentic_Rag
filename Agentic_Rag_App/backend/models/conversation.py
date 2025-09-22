@@ -1,4 +1,25 @@
-"""Conversation models for PostgreSQL storage."""
+"""
+Conversation Models for PostgreSQL Storage
+
+This module defines SQLAlchemy models for storing conversation data in PostgreSQL.
+It provides structured storage for conversations, messages, and summaries with
+proper indexing and relationships.
+
+Key Models:
+- Conversation: Stores conversation metadata and context
+- ConversationMessage: Individual messages within conversations
+- ConversationSummary: AI-generated conversation summaries
+
+Features:
+- Automatic timestamping
+- Performance-optimized indexing
+- JSON metadata support
+- Source document tracking
+- Processing mode tracking
+
+
+Version: 1.0.0
+"""
 
 from sqlalchemy import Column, String, Text, DateTime, Integer, Boolean, Index
 from sqlalchemy.ext.declarative import declarative_base
@@ -11,19 +32,27 @@ Base = declarative_base()
 
 
 class Conversation(Base):
-    """Conversation table to store conversation metadata."""
+    """
+    Conversation model for storing conversation metadata and context.
+    
+    This model represents a complete conversation session with metadata
+    including user information, timestamps, and custom attributes.
+    """
 
     __tablename__ = "conversations"
 
-    id = Column(String, primary_key=True)
-    user_id = Column(String, nullable=True)  # For future user management
-    title = Column(String(500), nullable=True)  # Auto-generated title
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    is_active = Column(Boolean, default=True)
-    extra_metadata = Column(Text, nullable=True)  # JSON metadata
+    # Primary key and identifiers
+    id = Column(String, primary_key=True, comment="Unique conversation identifier")
+    user_id = Column(String, nullable=True, comment="User identifier for future user management")
+    
+    # Conversation metadata
+    title = Column(String(500), nullable=True, comment="Auto-generated conversation title")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="Creation timestamp")
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), comment="Last update timestamp")
+    is_active = Column(Boolean, default=True, comment="Whether conversation is active")
+    extra_metadata = Column(Text, nullable=True, comment="JSON metadata for additional attributes")
 
-    # Indexes for performance
+    # Performance indexes
     __table_args__ = (
         Index('idx_conversations_user_id', 'user_id'),
         Index('idx_conversations_created_at', 'created_at'),
@@ -32,22 +61,30 @@ class Conversation(Base):
 
 
 class ConversationMessage(Base):
-    """Messages within conversations."""
+    """
+    Individual messages within conversations.
+    
+    This model stores each message in a conversation with metadata about
+    the response generation process, sources, and performance metrics.
+    """
 
     __tablename__ = "conversation_messages"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    conversation_id = Column(String, nullable=False)
-    role = Column(String(20), nullable=False)  # 'user', 'assistant'
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Primary key and foreign key
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Unique message identifier")
+    conversation_id = Column(String, nullable=False, comment="Reference to parent conversation")
+    
+    # Message content
+    role = Column(String(20), nullable=False, comment="Message role (user/assistant/system)")
+    content = Column(Text, nullable=False, comment="Message content")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="Message timestamp")
 
     # Response metadata for assistant messages
-    sources = Column(Text, nullable=True)  # JSON array of sources
-    processing_mode = Column(String(50), nullable=True)  # 'crew_ai', 'regular_rag', 'greeting'
-    model_used = Column(String(100), nullable=True)
-    token_count = Column(Integer, nullable=True)
-    response_time_ms = Column(Integer, nullable=True)
+    sources = Column(Text, nullable=True, comment="JSON array of source documents")
+    processing_mode = Column(String(50), nullable=True, comment="Processing mode (crew_ai_primary/chat_engine_fallback/query_engine)")
+    model_used = Column(String(100), nullable=True, comment="LLM model used for generation")
+    token_count = Column(Integer, nullable=True, comment="Number of tokens in response")
+    response_time_ms = Column(Integer, nullable=True, comment="Response generation time in milliseconds")
 
     # Indexes for performance
     __table_args__ = (
@@ -58,17 +95,26 @@ class ConversationMessage(Base):
 
 
 class ConversationSummary(Base):
-    """Periodic summaries of conversations for efficient context retrieval."""
+    """
+    AI-generated summaries of conversations for efficient context retrieval.
+    
+    This model stores periodic summaries of conversations to enable efficient
+    context retrieval without loading all message history. Summaries are
+    generated by AI models and updated as conversations grow.
+    """
 
     __tablename__ = "conversation_summaries"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    conversation_id = Column(String, nullable=False)
-    summary = Column(Text, nullable=False)
-    message_count = Column(Integer, nullable=False)  # Number of messages summarized
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Primary key and foreign key
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="Unique summary identifier")
+    conversation_id = Column(String, nullable=False, comment="Reference to parent conversation")
+    
+    # Summary content and metadata
+    summary = Column(Text, nullable=False, comment="AI-generated conversation summary")
+    message_count = Column(Integer, nullable=False, comment="Number of messages summarized")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), comment="Summary creation timestamp")
 
-    # Indexes
+    # Performance indexes
     __table_args__ = (
         Index('idx_summaries_conversation_id', 'conversation_id'),
         Index('idx_summaries_created_at', 'created_at'),

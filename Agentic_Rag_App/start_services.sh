@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🚀 Starting Agentic RAG Core Services..."
+echo " Starting Agentic RAG Core Services..."
 
 # Start core services first
 echo "Starting PostgreSQL, Ollama, and Phoenix..."
@@ -13,7 +13,7 @@ while ! docker-compose exec postgres pg_isready -U raguser -d agentic_rag > /dev
     sleep 2
 done
 
-echo "✅ PostgreSQL is ready"
+echo " PostgreSQL is ready"
 
 # Check if Ollama is responding
 echo "Checking Ollama service..."
@@ -22,16 +22,16 @@ until curl -f http://localhost:11434/api/version > /dev/null 2>&1; do
     sleep 2
 done
 
-echo "✅ Ollama is ready"
+echo " Ollama is ready"
 
 # Start OpenWebUI
 echo "Starting OpenWebUI..."
 docker-compose up -d openwebui
 
-echo "🎉 Core services are running!"
-echo "📊 Phoenix UI: http://localhost:6006"
+echo " Core services are running!"
+echo " Phoenix UI: http://localhost:6006"
 echo "🤖 OpenWebUI: http://localhost:3000"
-echo "🗄️ PostgreSQL: localhost:5433"
+echo " PostgreSQL: localhost:5433"
 echo "🦙 Ollama API: http://localhost:11434"
 
 echo ""

@@ -1,6 +1,6 @@
-# RAGAs Evaluator
+# Agentic RAG Evaluator (CrewAI + RAGas)
 
-A comprehensive RAG evaluation system using RAGAs (Retrieval Augmented Generation Assessment) framework to evaluate the quality of your Agentic RAG implementation.
+A comprehensive Agentic RAG evaluation system that uses CrewAI agents to generate answers and the RAGas framework to score them.
 
 ## Features
 
@@ -42,14 +42,14 @@ Configuration is handled in `config.py` with these defaults:
 - Embedding Model: `nomic-embed-text:v1.5`
 - LLM Model: `llama3.2:1b`
 
-## Usage
+## Usage (Step-by-step flow)
 
-### 1. Check System Status
+### 1) Check system status
 ```bash
 python main.py status
 ```
 
-### 2. Generate Test Dataset
+### 2) Generate test dataset (optional)
 ```bash
 # Generate 20 test questions from indexed documents
 python main.py generate-dataset
@@ -61,7 +61,7 @@ python main.py generate-dataset --num-questions 50
 python main.py generate-dataset --output /path/to/dataset.json
 ```
 
-### 3. Run Evaluation
+### 3) Run evaluation (CrewAI answers + RAGas metrics)
 ```bash
 # Run complete evaluation with all metrics
 python main.py evaluate
@@ -79,7 +79,7 @@ python main.py evaluate --dataset /path/to/custom_dataset.json
 python main.py evaluate --output /path/to/report.json
 ```
 
-### 4. View Reports
+### 4) View reports
 ```bash
 # List all evaluation reports
 python main.py list-reports
@@ -121,24 +121,24 @@ List available evaluation reports.
 **Options:**
 - `--path, -p`: Path to reports directory
 
-## Example Workflow
+## Example end-to-end flow (call-by-call)
 
-1. **Check if your system is ready:**
+1) **Check if your system is ready:**
 ```bash
 python main.py status
 ```
 
-2. **Generate test dataset:**
+2) **Generate test dataset:**
 ```bash
 python main.py generate-dataset --num-questions 30
 ```
 
-3. **Run evaluation:**
+3) **Run evaluation:**
 ```bash
 python main.py evaluate
 ```
 
-4. **View the results:**
+4) **View the results:**
 ```bash
 python main.py list-reports
 python main.py show-report --report reports/rag_evaluation_report_20240914_120000.json
@@ -177,29 +177,21 @@ config.database_url = "postgresql://user:pass@host:port/db"
 config.num_test_questions = 50
 ```
 
-## Troubleshooting
+## Current issues (today) and mitigations
 
-### Common Issues
+1) Some metrics return NaN or time out (faithfulness, answer_relevancy, context_precision, answer_correctness)
+- Symptom: Progress bar shows many TimeoutError events; final report has 0/NaN for these metrics.
+- Cause: These metrics execute multi-step LLM/NLI prompts. With RAGas 0.3.4 + LlamaIndex wrappers over Ollama, they frequently exceed time limits.
+- Mitigations we applied (already in code):
+  - Deterministic LLM config for evaluator: temperature=0.0, num_predict=512, request_timeout=60s
+  - Guarded evaluation with a global timeout and robust error logging
+  - Confirmed dataset schema: question, answer, contexts (list[str]), ground_truth
+- Options to get all metrics today (choose one):
+  - Keep CrewAI for answers but switch evaluator’s scoring LLM to a faster API (e.g., OpenAI) only for metrics; or
+  - Upgrade to RAGas >= 0.4 which improves metric execution and compatibility.
 
-1. **Database Connection Error**
-   - Ensure PostgreSQL is running
-   - Check database credentials in `config.py`
-   - Verify the database contains indexed documents
 
-2. **Backend API Unavailable**
-   - Start your RAG backend server
-   - Check the API URL in configuration
-   - Verify the backend is healthy
-
-3. **Ollama Models Not Available**
-   - Ensure Ollama is running
-   - Pull required models: `ollama pull nomic-embed-text:v1.5` and `ollama pull llama3.2:1b`
-
-4. **No Documents Found**
-   - Run the indexer first to populate the database
-   - Check that documents are properly indexed
-
-### Performance Tips
+### Performance tips
 
 - Start with a smaller number of test questions (10-20) for faster evaluation
 - Use specific metrics instead of all metrics for quicker results
@@ -214,3 +206,38 @@ The evaluator is designed to work seamlessly with your existing Agentic RAG setu
 - Generates reports in the `reports/` directory
 
 No changes to other components are required!
+
+## Issues & Resolutions (Field Notes)
+
+This section documents the exact issues we ran into during setup and how we resolved each one, in order. Use it as a checklist when reproducing or presenting.
+
+1) Timeouts during heavy metrics (faithfulness, relevancy, precision, correctness)
+- Cause: These metrics perform multi-step LLM/NLI operations; Ollama via wrappers can be slow.
+- Fixes:
+  - Lowered generation (`num_predict=512`) and `temperature=0.0`.
+  - Added evaluation timeout guards.
+  - For stable demos: run with a subset of compatible metrics (answer_similarity, context_recall). For all metrics, consider faster model backends or RAGas >= 0.4.
+
+## Playbooks
+
+### A) Stable demo (CrewAI answers + RAGas, compatible metrics)
+```bash
+cd evaluator
+python3 main.py evaluate -d datasets/test_questions.json \
+  -m answer_similarity -m context_recall \
+  -o reports/crew_ai_eval_stable.json
+python3 main.py show-report -r reports/crew_ai_eval_stable.json
+```
+
+Expected: Non‑NaN numbers; recent run achieved answer_similarity ≈ 0.825 and context_recall ≈ 0.722.
+
+### B) Full metrics run (may be slow or partially NaN on Ollama)
+```bash
+cd evaluator
+python3 main.py evaluate -d datasets/test_questions.json \
+  -m faithfulness -m answer_relevancy -m context_precision -m context_recall -m answer_similarity -m answer_correctness \
+  -o reports/crew_ai_eval_full_metrics.json
+python3 main.py show-report -r reports/crew_ai_eval_full_metrics.json
+```
+
+Tip: If LLM metrics time out, reduce question count, limit contexts to top 2, or switch evaluator’s scoring LLM to a faster provider while keeping CrewAI as the answer source.

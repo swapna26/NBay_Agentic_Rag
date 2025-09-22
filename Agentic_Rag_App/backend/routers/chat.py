@@ -1,4 +1,19 @@
-"""Chat endpoints compatible with OpenWebUI - Complete Implementation."""
+"""
+Chat Router - OpenWebUI Compatible Endpoints
+
+This module provides chat endpoints that are compatible with OpenWebUI,
+enabling seamless integration with the frontend interface. It handles
+chat completions using the CrewAI-powered RAG service.
+
+Key Features:
+- OpenWebUI compatibility
+- CrewAI agent integration
+- Conversation memory management
+- Streaming and non-streaming responses
+- Phoenix observability integration
+
+Version: 1.0.0
+"""
 
 import json
 import time
@@ -18,34 +33,34 @@ except ImportError:
 
 logger = structlog.get_logger()
 
-
-# Removed topic change detection - conversation memory handles context automatically
-
-
-router = APIRouter()
+# Create router for chat endpoints
+router = APIRouter(tags=["chat"])
 
 # Pydantic models for OpenWebUI compatibility
 class ChatMessage(BaseModel):
-    role: str = Field(..., description="Role of the message sender")
+    """Individual chat message in a conversation."""
+    role: str = Field(..., description="Role of the message sender (user/assistant/system)")
     content: str = Field(..., description="Content of the message")
     name: Optional[str] = Field(None, description="Name of the sender")
 
 class ChatCompletionRequest(BaseModel):
-    model: str = Field(..., description="Model to use")
-    messages: List[ChatMessage] = Field(..., description="List of messages")
+    """Request model for chat completions compatible with OpenWebUI."""
+    model: str = Field(..., description="Model to use for completion")
+    messages: List[ChatMessage] = Field(..., description="List of conversation messages")
     stream: bool = Field(False, description="Whether to stream the response")
     temperature: Optional[float] = Field(0.1, description="Temperature for response generation")
     max_tokens: Optional[int] = Field(4000, description="Maximum tokens in response")
-    top_p: Optional[float] = Field(1.0, description="Top-p sampling")
+    top_p: Optional[float] = Field(1.0, description="Top-p sampling parameter")
     frequency_penalty: Optional[float] = Field(0.0, description="Frequency penalty")
     presence_penalty: Optional[float] = Field(0.0, description="Presence penalty")
     stop: Optional[List[str]] = Field(None, description="Stop sequences")
 
 class ChatCompletionResponse(BaseModel):
+    """Response model for chat completions compatible with OpenWebUI."""
     id: str = Field(..., description="Unique identifier for the completion")
     object: str = Field("chat.completion", description="Object type")
     created: int = Field(..., description="Unix timestamp of creation")
-    model: str = Field(..., description="Model used")
+    model: str = Field(..., description="Model used for completion")
     choices: List[Dict[str, Any]] = Field(..., description="List of completion choices")
     usage: Dict[str, int] = Field(..., description="Token usage information")
 
@@ -76,10 +91,25 @@ def get_rag_service(request: Request):
 @router.post("/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest, http_request: Request):
     """
-    OpenWebUI compatible chat completions endpoint.
+    OpenWebUI compatible chat completions endpoint with CrewAI integration.
 
-    This is the main endpoint that OpenWebUI uses for chat functionality.
-    It supports both streaming and non-streaming responses.
+    This is the primary endpoint that OpenWebUI uses for chat functionality.
+    It processes user queries using the CrewAI multi-agent system and returns
+    intelligent responses with source citations.
+
+    Features:
+    - CrewAI multi-agent processing
+    - Conversation memory management
+    - Source document retrieval
+    - Streaming and non-streaming responses
+    - Phoenix observability integration
+
+    Args:
+        request: Chat completion request with messages and parameters
+        http_request: FastAPI request object for service access
+
+    Returns:
+        ChatCompletionResponse: Structured response compatible with OpenWebUI
     """
     # Create Phoenix trace for chat completion if tracing is available
     tracer = None
@@ -162,11 +192,11 @@ async def chat_completions(request: ChatCompletionRequest, http_request: Request
         logger.error("Chat completion failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat completion failed: {str(e)}")
 
-async def non_stream_chat_response(rag_service, message: str, conversation_history: List[Dict], request: ChatCompletionRequest, conversation_id: str, use_full_agents: str = False) -> ChatCompletionResponse:
+async def non_stream_chat_response(rag_service, message: str, conversation_history: List[Dict], request: ChatCompletionRequest, conversation_id: str) -> ChatCompletionResponse:
     """Generate non-streaming chat response with RAG and optional CrewAI agents."""
     try:
         # Use the chat engine with conversation memory
-        actual_message = message.replace("[AGENTIC_RAG]", "").strip().replace("[SIMPLE_RAG]", "").strip()
+        actual_message = message.replace("[AGENTIC_RAG]", "").strip().replace("[SIMPLE_RAG]", "").strip().replace("[CREW_AI]", "").strip()
 
         # Pass conversation history to the RAG service for context
         result = await rag_service.chat(actual_message, conversation_history, conversation_id)
@@ -272,7 +302,7 @@ async def non_stream_chat_response(rag_service, message: str, conversation_histo
         logger.error("Non-streaming response failed", error=str(e), exc_info=True)
         raise HTTPException(status_code=500, detail=f"Response generation failed: {str(e)}")
 
-async def stream_chat_response(rag_service, message: str, conversation_history: List[Dict], request: ChatCompletionRequest, conversation_id: str, use_full_agents: bool = False):
+async def stream_chat_response(rag_service, message: str, conversation_history: List[Dict], request: ChatCompletionRequest, conversation_id: str):
     """Generate streaming chat response with RAG."""
     try:
         completion_id = f"chatcmpl-{uuid.uuid4()}"
