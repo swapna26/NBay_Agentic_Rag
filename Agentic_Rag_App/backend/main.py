@@ -267,9 +267,9 @@ async def get_model(model_id: str):
 from routers.chat import router as chat_router
 app.include_router(chat_router, prefix="/api")
 
-# Include document management endpoints  
-from routers.documents import router as docs_router
-app.include_router(docs_router, prefix="/api")
+# # Include document management endpoints  
+# from routers.documents import router as docs_router
+# app.include_router(docs_router, prefix="/api")
 
 if __name__ == "__main__":
     import uvicorn

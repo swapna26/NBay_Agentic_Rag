@@ -64,14 +64,14 @@ class RAGCrew:
         self.config = config
         self.crew = None
 
-        # Configure Ollama LLM for CrewAI agents
+        # Configure Ollama LLM for CrewAI agents - Optimized for llama3.2:1b
         self.llm = LLM(
             model=f"ollama/{self.config.ollama_model}",
             api_base=self.config.ollama_base_url,
-            temperature=config.temperature,
-            max_tokens=1500,
-            timeout=120,
-            max_retries=2
+            temperature=0.0,  # Lower temperature for faster, more deterministic responses
+            max_tokens=1200,  # Increased to allow more detailed responses
+            timeout=90,       # Increased timeout for better response generation
+            max_retries=1     # Keep at 1 for faster failure handling
         )
 
         # Initialize the agent team
@@ -80,21 +80,21 @@ class RAGCrew:
     def _create_document_retrieval_tool(self):
         """Create a document retrieval tool using the @tool decorator."""
 
-        @tool("Document Retrieval Tool")
-        def document_retrieval_tool(query: str) -> str:
-            """Retrieves relevant context from a collection of policy and standards documents. Use this tool to search for information in policy documents, manuals, and standards.
+        @tool("Search Documents")
+        def search_documents(search_terms: str) -> str:
+            """Search for relevant documents using provided search terms.
 
             Args:
-                query: The search query to find relevant documents
+                search_terms: Simple search keywords as a string
             """
             try:
-                logger.info("Document retrieval tool called", query=query[:100])
+                logger.info("Document search called", search_terms=search_terms[:100])
 
                 # Validate we have a proper query string
-                if not query or not query.strip():
+                if not search_terms or not search_terms.strip():
                     return "Error: Search query cannot be empty."
 
-                search_query = query.strip()
+                search_query = search_terms.strip()
 
                 # Check if we got a placeholder description instead of real query
                 placeholder_queries = [
@@ -185,7 +185,7 @@ Content: {content}
                 logger.error("Document retrieval failed", error=str(e))
                 return f"Error retrieving documents: {str(e)}. Please check your database connection and try again."
         
-        return document_retrieval_tool
+        return search_documents
 
     def _clean_response(self, response: str) -> str:
         """Clean the response to remove exposed thought processes and unwanted content."""
@@ -206,8 +206,36 @@ Content: {content}
         for pattern in patterns_to_remove:
             cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
 
+        # Enhanced follow-up question removal patterns
+        follow_up_patterns = [
+            r"^\s*(Would you like|Do you want|Can I help|Is there anything else).*?\?.*$",
+            r"^\s*(Feel free to ask|Please let me know|If you have|Any other questions).*$",
+            r"^\s*(I hope this helps|Hope this answers|Let me know if).*$",
+            r"^\s*(For more information|To learn more|Additional details).*$",
+            r"^\s*(Next steps|What would you like|How can I assist).*$",
+            r"^\s*Would you like me to.*?\?.*$",
+            r"^\s*Is there anything specific.*?\?.*$",
+            r"^\s*Do you need.*?\?.*$",
+            r"^\s*Can I provide.*?\?.*$",
+        ]
+
+        for pattern in follow_up_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+
+        # Remove FOLLOW_UP/NEW_TOPIC markers that might leak into responses
+        cleaned = re.sub(r"(FOLLOW_UP|NEW_TOPIC)\s*[-:]\s*", "", cleaned, flags=re.IGNORECASE)
+
+        # Remove meta-commentary phrases
+        meta_phrases = [
+            r"^\s*(Based on the conversation|According to the context|From the retrieved documents).*?(?=\n|$)",
+            r"^\s*(The document shows|The information indicates|As mentioned).*?(?=\n|$)",
+            r"^\s*(I can see that|It appears that|The response shows).*?(?=\n|$)",
+        ]
+
+        for pattern in meta_phrases:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+
         # Remove excessive bold formatting - convert **text** to plain text
-        # Keep only one level of bold for important headings
         cleaned = re.sub(r'\*\*(.*?)\*\*', r'\1', cleaned)
 
         # Remove any remaining asterisks used for emphasis
@@ -248,99 +276,71 @@ Content: {content}
         # Create retrieval tool using decorator approach
         retrieval_tool = self._create_document_retrieval_tool()
         
-        # Document Retrieval Agent
+        # Document Retrieval Agent (context-aware)
         self.retrieval_agent = Agent(
-            role="Document Retrieval Specialist",
-            goal="Intelligently retrieve documents based on conversation context and query analysis guidance",
-            backstory="""You are an expert document retrieval specialist who adapts search strategy based on conversation context.
+            role="Context-Aware Document Finder",
+            goal="Use conversation context to find the most relevant documents",
+            backstory="""You are a smart document finder who understands conversation context. Your job:
 
-            Your responsibilities:
-            1. FOLLOW QUERY ANALYSER GUIDANCE: Use the search strategy provided by the Query Analyzer
-            2. CONTEXT-AWARE SEARCH:
-               - For FOLLOW_UP questions: Search using context from previous conversation
-               - For NEW_TOPIC questions: Focus on the new topic independently
-            3. SMART RETRIEVAL: Use the most relevant search terms to find specific information
+            1. ANALYZE THE FULL QUERY: Look for conversation context and current question
+            2. UNDERSTAND FOLLOW-UPS: If there's previous context, understand what the user is referring to
+            3. SEARCH APPROPRIATELY:
+               - For new questions: Search using the question keywords
+               - For follow-ups: Search using BOTH context keywords AND current request
+            4. Use the Search Documents tool ONCE with the best keywords
 
-            Search strategies:
-            - Follow-ups about same topic: Use previous context + current request
-            - Format changes (e.g., "5-line summary"): Search for same topic but comprehensive info
-            - New topics: Search independently for new subject matter
+            CRITICAL RULES:
+            - Call the Search Documents tool only ONE time
+            - For follow-up questions like "list in bullet points", use keywords from PREVIOUS context
+            - Include specific terms mentioned in quotes or technical terms
+            - Do NOT call the tool multiple times
 
             Examples:
-            - Query Analyzer says "FOLLOW_UP - search for procurement summary" → Search for "procurement definition overview key points"
-            - Query Analyzer says "NEW_TOPIC - search for HR policies" → Search for "HR policies human resources"
+            - "What is procurement?" → Search "procurement definition processes"
+            - "Can you list above in bullet points?" (with context about disciplinary actions) → Search "disciplinary actions financial rules violations penalty clauses"
+            - "How do X and Y relate?" → Search "X Y relationship processes"
 
-            Always use the Document Retrieval Tool with appropriate search terms based on the guidance.""",
+            ALWAYS examine the full query for conversation context before choosing search terms.""",
             tools=[retrieval_tool],
             llm=self.llm,
-            verbose=self.config.crew_verbose,
+            verbose=False,  # Turn off verbose to reduce confusion
             allow_delegation=False,
-            max_iter=3,
-            max_execution_time=300
+            max_iter=1,     # Only 1 iteration to prevent loops
+            max_execution_time=120  # Give enough time for tool execution
         )
         
-        # Query Analysis Agent - Enhanced for conversation understanding
-        self.query_agent = Agent(
-            role="Query Analyzer",
-            goal="Analyze conversations to understand question context and determine optimal search strategy",
-            backstory="""You are an expert conversation analyst who understands the full context of user interactions.
-
-            Your key responsibilities:
-            1. CONVERSATION ANALYSIS: Examine the full conversation history to understand context
-            2. QUESTION TYPE DETECTION: Determine if current question is:
-               - Follow-up (clarification, different format, more details about same topic)
-               - New question (completely different topic/domain)
-            3. SEARCH STRATEGY: Provide specific guidance for document retrieval:
-               - For follow-ups: "FOLLOW_UP - search for [specific terms] related to [previous topic]"
-               - For new questions: "NEW_TOPIC - search for [new topic terms]"
-
-            Examples:
-            - "What is procurement?" → "NEW_TOPIC - search for procurement definition, processes"
-            - "Give me a 5-line summary" (after procurement question) → "FOLLOW_UP - search for procurement summary, key points"
-            - "What are HR policies?" (after procurement question) → "NEW_TOPIC - search for HR policies, human resources"
-
-            Always provide clear, specific search guidance for the Document Retriever.
-
-            STRICT OUTPUT RULES:
-            - Do NOT include suggested questions, next steps, or prompts for the user.
-            - Do NOT include FOLLOW_UP/NEW_TOPIC markers in the final user answer (internal guidance only).
-            - Keep output short and purely as internal guidance for retrieval.
-            """,
-            llm=self.llm,
-            verbose=self.config.crew_verbose,
-            allow_delegation=False,
-            max_iter=2,
-            max_execution_time=180
-        )
+        # Query Analyzer functionality merged into Document Retrieval Agent above
         
-        # Response Generation Agent
+        # Response Generation Agent (context-aware)
         self.response_agent = Agent(
-            role="Information Extractor",
-            goal="Extract specific information from retrieved documents to answer user questions",
-            backstory="""You are an expert at reading documents and extracting SPECIFIC information. You MUST:
-            - Read the actual document content provided by the retrieval agent
-            - Extract SPECIFIC details, facts, and information from those documents
-            - Answer based ONLY on what is actually written in the documents
-            - NEVER write generic answers or make assumptions
-            - NEVER include your thought process or reasoning in the final answer
+            role="Context-Aware Answer Writer",
+            goal="Write answers that understand conversation context and follow-up requests",
+            backstory="""You are a smart answer writer who understands conversation flow. Your job:
 
-            FORMAT STRICTLY AS PLAIN TEXT ONLY:
-            - Do NOT use Markdown at all (no headings, no bold, no italics)
-            - Do NOT start lines with #, ##, ###, -, *, or numbers to mimic lists
-            - Write in short paragraphs separated by blank lines
-            - If listing items, write them as simple sentences on separate lines without list markers
+            1. ANALYZE THE QUERY: Check if there's conversation context provided
+            2. UNDERSTAND THE REQUEST:
+               - If it's a new question: Provide a comprehensive answer
+               - If it's a follow-up: Transform the PREVIOUS answer according to the current request
+            3. READ DOCUMENTS: Use the retrieved documents to provide accurate information
 
-            IMPORTANT:
-            - Do NOT ask follow-up questions or propose next steps in the answer.
-            - Do NOT include any planner artifacts like FOLLOW_UP or NEW_TOPIC in the answer.
-            - Do NOT start with meta phrases like "I can", "I now can", "Here is", or "Let me".
-            - Only answer the user's question.
-            """,
+            SPECIAL HANDLING FOR FOLLOW-UPS:
+            - "List in bullet points" → Convert previous content to bullet format
+            - "Summarize in X points" → Create X key points from previous answer
+            - "What about Y?" → Focus on Y aspect from previous context
+            - "Can you explain more?" → Expand on previous answer
+
+            RULES:
+            - Write in plain text only (no formatting symbols)
+            - For bullet points, use simple lines without • or - symbols
+            - Be comprehensive and accurate
+            - Use information from documents
+            - Don't ask follow-up questions
+            - Don't say "Here is" or "Let me" - just answer directly""",
             llm=self.llm,
-            verbose=self.config.crew_verbose,
+            verbose=False,  # Turn off verbose
             allow_delegation=False,
-            max_iter=1,
-            max_execution_time=180
+            max_iter=1,     # Only 1 iteration
+            max_execution_time=90  # Enough time for detailed response generation
         )
         
         # Quality Validation Agent
@@ -356,122 +356,48 @@ Content: {content}
             llm=self.llm,
             verbose=self.config.crew_verbose,
             allow_delegation=False,
-            max_iter=1,
-            max_execution_time=180
+            max_iter=1,        # Keep at 1 iteration
+            max_execution_time=60  # Reduced from 180s to 60s
         )
     
     def create_crew(self, query: str) -> Crew:
         """Create a crew for processing a specific query."""
-        
-        # All queries go through the information retrieval workflow
-        
-        # Task 1: Intelligent conversation analysis and search strategy
-        query_task = Task(
-            description=f"""Analyze the following input and provide search strategy:
 
-{query}
+        # Streamlined workflow with 2 agents only
 
-Your task:
-1. If there's conversation history, analyze it to understand context
-2. Determine if the current question is:
-   - FOLLOW_UP: Clarification, different format, or more details about the same topic
-   - NEW_TOPIC: Completely different subject or domain
-3. Provide specific search guidance:
-   - For FOLLOW_UP: "FOLLOW_UP - search for [topic] [specific request like summary/details]"
-   - For NEW_TOPIC: "NEW_TOPIC - search for [new topic terms]"
-
-Output format: "[TYPE] - search for [specific terms]"
-Examples:
-- "FOLLOW_UP - search for procurement key points summary"
-- "NEW_TOPIC - search for HR policies human resources"
-""",
-            agent=self.query_agent,
-            expected_output="Search strategy with question type and specific search terms"
-        )
-        
-        # Task 2: Context-aware document retrieval
+        # Task 1: Very simple document retrieval
         retrieval_task = Task(
-            description=f"""Based on the Query Analyzer's guidance, retrieve relevant documents.
+            description=f"""Find documents for: {query}
 
-Original query: "{query}"
-
-Instructions:
-1. Use the search strategy provided by the Query Analyzer
-2. Extract the search terms from their guidance
-3. Use the Document Retrieval Tool with appropriate search terms
-4. For FOLLOW_UP questions: Consider previous context in search
-5. For NEW_TOPIC questions: Focus on the new topic
-
-Use the tool to retrieve the most relevant documents.""",
+Use the Search Documents tool ONCE with good keywords. Don't overthink it.""",
             agent=self.retrieval_agent,
-            expected_output="Retrieved document content relevant to the search strategy",
-            context=[query_task]
+            expected_output="Documents found using the search tool"
         )
         
-        # Task 3: Context-aware response generation
+        # Task 2: Comprehensive response generation
         response_task = Task(
-            description=f"""Generate a response using the Query Analyzer's guidance and retrieved documents.
+            description=f"""Answer this question thoroughly using the documents: {query}
 
-Original query: "{query}"
+Provide a comprehensive answer that:
+1. Addresses all parts of the question
+2. Includes specific details from the documents
+3. Explains relationships and processes clearly
+4. Uses plain text format only
 
-Instructions:
-1. Check the Query Analyzer's determination (FOLLOW_UP vs NEW_TOPIC)
-2. For FOLLOW_UP questions:
-   - Reference previous conversation context appropriately
-   - Provide the specific format/details requested (e.g., "5-line summary")
-   - Use information from retrieved documents about the same topic
-3. For NEW_TOPIC questions:
-   - Provide comprehensive answer about the new topic
-   - Focus on the new subject independently
-
-STRICT REQUIREMENTS:
-1. Read the ACTUAL document content from the retrieval task
-2. Extract SPECIFIC information from those documents
-3. Answer based ONLY on what is written in the documents
-4. If documents don't contain the information, say so explicitly
-5. Use format: # title, then plain text with - bullet points
-6. DO NOT include "Thought:" or reasoning in your answer
-7. DO NOT write generic responses
-8. DO NOT use asterisks (*) or double asterisks (**) for formatting
-9. DO NOT make text bold - use plain text only
-10. Write in simple markdown with # for headings and - for lists
-
-FORMATTING RULES:
-- Use ONLY ONE # heading at the very top
-- Use plain text sections (not additional # headings)
-- Use - for bullet points
-- NO bold formatting with ** or *
-- NO italic formatting
-- NO multiple headings - only one # at the start
-
-Answer with SPECIFIC details from the actual documents using plain text formatting.""",
+Be thorough and detailed in your response.""",
             agent=self.response_agent,
-            expected_output="Context-aware answer based on actual document content, following conversation guidance",
-            context=[query_task, retrieval_task]
+            expected_output="Comprehensive detailed answer in plain text",
+            context=[retrieval_task]
         )
 
-        # Task 4: Validation and formatting (ensures no follow-up questions / next steps)
-        validation_task = Task(
-            description="""Review the draft response and ensure it:
-1) Answers only the user's question
-2) Contains NO follow-up questions, NO suggested next steps
-3) Is plain text (no Markdown, no headings, no bullets)
-4) Is concise and specific
-
-Return only the final cleaned answer text.""",
-            agent=self.validation_agent,
-            expected_output="Final cleaned answer without follow-up prompts or extra questions",
-            context=[response_task]
-        )
-
-        # Create and return crew with timeout
+        # Create simple crew - no complications
         crew = Crew(
-            agents=[self.query_agent, self.retrieval_agent, self.response_agent, self.validation_agent],
-            tasks=[query_task, retrieval_task, response_task, validation_task],
+            agents=[self.retrieval_agent, self.response_agent],
+            tasks=[retrieval_task, response_task],
             process=Process.sequential,
-            verbose=False,
-            memory=False,
-            max_execution_time=180
+            verbose=False,  # Turn off all verbose output
+            memory=False,   # No memory complications
+            max_execution_time=210  # Total time for both agents
         )
         
         return crew
@@ -546,7 +472,7 @@ Return only the final cleaned answer text.""",
                 "sources": sources,
                 "metadata": {
                     "model": "crewai-agentic-rag-llama3.2:1b",
-                    "agents_used": ["retrieval_specialist", "response_generator", "validator"],
+                    "agents_used": ["intelligent_retrieval_specialist", "information_extractor"],  # Only 2 agents now
                     "process_type": "sequential",
                     "query_type": query_type,
                     "source_count": len(sources)

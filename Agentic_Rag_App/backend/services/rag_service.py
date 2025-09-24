@@ -24,8 +24,7 @@ from llama_index.core import VectorStoreIndex, StorageContext
 from llama_index.vector_stores.postgres import PGVectorStore
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
-from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core.llms import ChatMessage
+# Removed ChatMemoryBuffer and ChatMessage - using PostgreSQL only for conversation storage
 
 from config import BackendConfig
 from services.conversation_service import ConversationService
@@ -75,14 +74,14 @@ class RAGService:
         self.phoenix_service = None  # Injected from main.py
         self.conversation_service = None  # PostgreSQL conversation storage
         
-        # Rate limiting configuration
+        # Enhanced rate limiting configuration for llama3.2:1b
         self.last_request_time = 0
-        self.min_request_interval = getattr(config, 'ollama_min_request_interval', 0.1)
+        self.min_request_interval = getattr(config, 'ollama_min_request_interval', 0.5)  # Increased from 0.1s to 0.5s
         self.request_count = 0
         self.request_window_start = time.time()
-        self.max_requests_per_minute = getattr(config, 'ollama_requests_per_minute', 100)
-        self.max_retries = getattr(config, 'ollama_retry_attempts', 3)
-        self.retry_delay = getattr(config, 'ollama_retry_delay', 2)
+        self.max_requests_per_minute = getattr(config, 'ollama_requests_per_minute', 30)  # Reduced from 100 to 30
+        self.max_retries = getattr(config, 'ollama_retry_attempts', 2)  # Reduced from 3 to 2
+        self.retry_delay = getattr(config, 'ollama_retry_delay', 1)  # Reduced from 2s to 1s
     
     async def initialize(self):
         """
@@ -108,12 +107,12 @@ class RAGService:
                 base_url=self.config.ollama_base_url,
             )
 
-            # Initialize Ollama LLM
+            # Initialize Ollama LLM with standardized timeout
             self.llm = Ollama(
                 model=self.config.ollama_model,
                 base_url=self.config.ollama_base_url,
                 temperature=self.config.temperature,
-                request_timeout=120.0,
+                request_timeout=60.0,  # Standardized to 60s across all components
             )
 
             # Test the Ollama connection
@@ -156,20 +155,17 @@ class RAGService:
                 verbose=True
             )
             
-            # Initialize conversation memory
-            self.memory = ChatMemoryBuffer.from_defaults(
-                token_limit=self.config.max_tokens // 2  # Reserve half for response
-            )
+            # Remove LlamaIndex memory - we'll use PostgreSQL only for conversation storage
+            self.memory = None
 
-            # Initialize chat engine with memory
+            # Initialize chat engine without memory (PostgreSQL handles conversation context)
             try:
                 self.chat_engine = self.index.as_chat_engine(
-                    chat_mode="context",
+                    chat_mode="simple",  # Use simple mode without memory
                     llm=self.llm,
-                    memory=self.memory,
                     verbose=True
                 )
-                logger.info("Chat engine initialized successfully")
+                logger.info("Chat engine initialized successfully (using PostgreSQL for conversation memory)")
             except Exception as e:
                 logger.warning("Failed to initialize chat engine, will use query engine fallback", error=str(e))
                 self.chat_engine = None
@@ -285,26 +281,13 @@ class RAGService:
         return random.choice(greetings)
 
     async def _populate_memory_from_history(self, conversation_history: List[Dict]):
-        """Populate ChatMemoryBuffer with conversation history."""
-        if not conversation_history:
-            return
-
-        try:
-            # Clear existing memory
-            self.memory.reset()
-
-            # Add messages to memory
-            for msg in conversation_history:
-                chat_msg = ChatMessage(
-                    role=msg["role"],
-                    content=msg["content"]
-                )
-                self.memory.put(chat_msg)
-
-            logger.info("Populated memory with conversation history",
+        """Legacy method - now uses PostgreSQL only for conversation storage."""
+        # Memory management is now handled entirely by PostgreSQL conversation service
+        # This method is kept for compatibility but does nothing
+        if conversation_history:
+            logger.info("Using PostgreSQL conversation storage (LlamaIndex memory disabled)",
                        message_count=len(conversation_history))
-        except Exception as e:
-            logger.error("Failed to populate memory from history", error=str(e))
+        return
 
     async def _get_conversation_context(self, conversation_id: str) -> str:
         """Get conversation context for the given conversation ID using PostgreSQL."""
@@ -322,39 +305,66 @@ class RAGService:
             return ""
 
     def _should_include_context(self, question: str, conversation_history: List[Dict]) -> bool:
-        """Heuristically decide whether to include prior context for this question.
+        """Simple context inclusion logic - let agents handle context understanding."""
+        # Always include context if conversation history exists - agents are smart enough
+        # to determine what's relevant vs. what's a new topic
+        return bool(conversation_history)
 
-        Uses lightweight lexical overlap with the most recent user message to avoid
-        contaminating new-topic queries with old context.
-        """
-        if not conversation_history:
-            return False
+    def _prepare_contextual_query(self, question: str, conversation_history: List[Dict]) -> str:
+        """Prepare query with proper conversational context for CrewAI agents."""
+        # Check if this is a follow-up question
+        follow_up_indicators = [
+            "above", "previous", "that", "this", "it", "them", "those",
+            "list", "summarize", "bullet points", "key points", "main points",
+            "can you", "could you", "please", "also", "what about", "how about"
+        ]
 
-        # Look for an explicit reset/new topic signal
-        lower_q = (question or "").lower()
-        explicit_reset_phrases = ["new topic", "start over", "ignore previous", "no relation", "unrelated"]
-        if any(p in lower_q for p in explicit_reset_phrases):
-            return False
+        question_lower = question.lower()
+        is_followup = any(indicator in question_lower for indicator in follow_up_indicators)
 
-        # Find last user message content
-        last_user = next((m for m in reversed(conversation_history) if m.get("role") == "user" and m.get("content")), None)
-        if not last_user:
-            return False
+        # If not a follow-up, return simple question
+        if not is_followup or not conversation_history:
+            return question
 
-        import re
-        def tokenize(text: str) -> set:
-            tokens = re.findall(r"[a-zA-Z0-9]+", (text or "").lower())
-            # Remove trivial short tokens
-            return {t for t in tokens if len(t) > 2}
+        # Get the last meaningful Q&A exchange
+        last_qa = self._get_last_qa_pair(conversation_history)
+        if not last_qa:
+            return question
 
-        q_tokens = tokenize(question)
-        prev_tokens = tokenize(last_user.get("content", ""))
-        if not q_tokens or not prev_tokens:
-            return False
+        # Create contextual query for CrewAI agents
+        contextual_query = f"""CONVERSATION CONTEXT:
+Previous Question: {last_qa['question']}
+Previous Answer: {last_qa['answer'][:500]}...
 
-        overlap = len(q_tokens & prev_tokens) / max(1, len(q_tokens | prev_tokens))
-        # Include context only if sufficient overlap (threshold tuned small)
-        return overlap >= 0.2
+CURRENT FOLLOW-UP QUESTION: {question}
+
+NOTE: This is a follow-up question referring to the previous answer. Please use the context above to understand what the user is asking about."""
+
+        return contextual_query
+
+    def _get_last_qa_pair(self, conversation_history: List[Dict]) -> Dict:
+        """Extract the most recent question-answer pair."""
+        if len(conversation_history) < 2:
+            return None
+
+        # Look for the last user question and assistant answer
+        last_user = None
+        last_assistant = None
+
+        for msg in reversed(conversation_history):
+            if msg.get("role") == "assistant" and not last_assistant:
+                last_assistant = msg.get("content", "")
+            elif msg.get("role") == "user" and not last_user and last_assistant:
+                last_user = msg.get("content", "")
+                break
+
+        if last_user and last_assistant:
+            return {
+                "question": last_user,
+                "answer": last_assistant
+            }
+
+        return None
 
     def _clean_conversation_context(self, raw_context: str) -> str:
         """Clean conversation context to remove meta-commentary and focus on substance."""
@@ -542,8 +552,8 @@ class RAGService:
 
                 return result
 
-            # Populate memory with conversation history
-            await self._populate_memory_from_history(conversation_history)
+            # Memory is now handled by PostgreSQL only
+            # await self._populate_memory_from_history(conversation_history)  # Disabled
 
             # Apply rate limiting for non-greeting queries
             await self._check_rate_limit()
@@ -563,34 +573,16 @@ class RAGService:
             # Use CrewAI agents as primary service
             if self.crew_agents:
                 try:
-                    logger.info("Using CrewAI agents for intelligent processing")
+                    logger.info("Using simplified CrewAI agents")
 
-                    # Build enriched query with recent conversation context (plain text, no markdown)
-                    enriched_query = question
-                    if conversation_history and self._should_include_context(question, conversation_history):
-                        # Take last few turns to provide context
-                        recent = conversation_history[-6:]
-                        ctx_lines = []
-                        for msg in recent:
-                            role = msg.get("role", "user").lower()
-                            content = (msg.get("content", "") or "").strip()
-                            if not content:
-                                continue
-                            if role == "user":
-                                ctx_lines.append(f"User: {content}")
-                            elif role == "assistant":
-                                ctx_lines.append(f"Assistant: {content}")
-                            else:
-                                ctx_lines.append(f"{role.capitalize()}: {content}")
-                        ctx_text = "\n".join(ctx_lines)
-                        enriched_query = (
-                            "Previous conversation context:\n"
-                            f"{ctx_text}\n\n"
-                            "Current question: " + question
-                        )
+                    # Enhanced context processing for CrewAI agents
+                    query_to_process = self._prepare_contextual_query(question, conversation_history)
 
-                    # Process query with CrewAI agents using enriched context
-                    result = await self.crew_agents.process_query(enriched_query)
+                    # Process with timeout protection
+                    result = await asyncio.wait_for(
+                        self.crew_agents.process_query(query_to_process),
+                        timeout=120  # 2 minute hard timeout
+                    )
 
                     # Add to conversation history if conversation_id provided
                     if conversation_id:
@@ -844,9 +836,7 @@ class RAGService:
                             response_time_ms=response_time_ms
                         )
 
-                        # Also add to LlamaIndex memory for consistency
-                        self.memory.put(f"Human: {question}")
-                        self.memory.put(f"Assistant: {result['response']}")
+                        # Memory is handled by PostgreSQL only - no LlamaIndex memory
 
                     # Update metadata to indicate context was used
                     if conversation_context:
@@ -916,10 +906,8 @@ class RAGService:
 
             response_text = str(response.response)
 
-            # Add to memory if conversation_id provided
-            if conversation_id:
-                self.memory.put(f"Human: {question}")
-                self.memory.put(f"Assistant: {response_text}")
+            # Memory is now handled by PostgreSQL conversation service only
+            # self.memory.put() calls removed - PostgreSQL stores all conversation data
 
             result = {
                 "response": response_text,
@@ -1086,9 +1074,7 @@ INSTRUCTIONS FOR RESPONSE GENERATOR:
                 await self._add_to_conversation(conversation_id, "user", question)
                 await self._add_to_conversation(conversation_id, "assistant", result['response'])
 
-                # Also add to LlamaIndex memory for consistency
-                self.memory.put(f"Human: {question}")
-                self.memory.put(f"Assistant: {result['response']}")
+                # Memory is handled by PostgreSQL only - no LlamaIndex memory
 
             # Update metadata to indicate context usage and topic change detection
             if use_context and conversation_context:
@@ -1183,19 +1169,8 @@ INSTRUCTIONS FOR RESPONSE GENERATOR:
             if self.conversation_service:
                 return await self.conversation_service.get_conversation_history(conversation_id)
             else:
-                # Fallback to LlamaIndex memory
-                messages = self.memory.get_all()
-                history = []
-
-                for i in range(0, len(messages), 2):
-                    if i + 1 < len(messages):
-                        history.append({
-                            "user": messages[i].content.replace("Human: ", ""),
-                            "assistant": messages[i + 1].content.replace("Assistant: ", ""),
-                            "timestamp": messages[i].additional_kwargs.get("timestamp", "")
-                        })
-
-                return history
+                logger.warning("Conversation service not available")
+                return []
 
         except Exception as e:
             logger.error("Failed to get conversation history", error=str(e))
@@ -1206,16 +1181,11 @@ INSTRUCTIONS FOR RESPONSE GENERATOR:
         try:
             if self.conversation_service:
                 result = await self.conversation_service.clear_conversation(conversation_id)
-                if result:
-                    # Also clear LlamaIndex memory
-                    self.memory.clear()
                 logger.info("Conversation cleared", conversation_id=conversation_id, success=result)
                 return result
             else:
-                # Fallback to clearing only LlamaIndex memory
-                self.memory.clear()
-                logger.info("Conversation cleared (memory only)", conversation_id=conversation_id)
-                return True
+                logger.warning("Conversation service not available")
+                return False
         except Exception as e:
             logger.error("Failed to clear conversation", error=str(e))
             return False

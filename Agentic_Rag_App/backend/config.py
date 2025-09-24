@@ -31,8 +31,8 @@ class BackendConfig:
         #self.chunk_size = int(os.getenv('CHUNK_SIZE', '700'))
         #self.chunk_overlap = int(os.getenv('CHUNK_OVERLAP', '200'))
         self.similarity_top_k = int(os.getenv('SIMILARITY_TOP_K', '5'))
-        self.max_tokens = int(os.getenv('MAX_TOKENS', '4000'))
-        self.temperature = float(os.getenv('TEMPERATURE', '0.1'))
+        self.max_tokens = int(os.getenv('MAX_TOKENS', '2000'))  # Reduced from 4000 to 2000
+        self.temperature = float(os.getenv('TEMPERATURE', '0.0'))  # Reduced from 0.1 to 0.0 for faster responses
         
         # Server Settings
         self.api_host = os.getenv('API_HOST', '0.0.0.0')
